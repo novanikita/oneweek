@@ -1,6 +1,7 @@
 (() => {
   const tasksField = document.getElementById("tasks-field");
   if (!tasksField) return;
+  const GENERAL_BLOCK_ID = "general";
 
   const state = {
     tasks: [],
@@ -24,8 +25,37 @@
     return { id, dbId, text, checked };
   }
 
+  function buildDragPayload(task) {
+    return {
+      sourceBlock: GENERAL_BLOCK_ID,
+      localId: task.id,
+      dbId: task.dbId ?? null,
+      text: task.text ?? "",
+      checked: !!task.checked,
+    };
+  }
+
+  function setGlobalDragPayload(payload) {
+    window.__dragTaskPayload = payload;
+  }
+
+  function getGlobalDragPayload() {
+    return window.__dragTaskPayload || null;
+  }
+
+  function clearGlobalDragPayload() {
+    window.__dragTaskPayload = null;
+  }
+
   function getTaskIndex(id) {
     return state.tasks.findIndex((t) => t.id === id);
+  }
+
+  function autoSizeTextarea(el) {
+    if (!el) return;
+    el.style.height = "auto";
+    const safeHeight = Math.max(el.scrollHeight || 0, 18);
+    el.style.height = `${safeHeight}px`;
   }
 
   function setTasksInteractivity(enabled) {
@@ -218,11 +248,12 @@
       checkbox.className = `task-checkbox${task.checked ? " checked" : ""}`;
       checkbox.setAttribute("aria-label", "Toggle task");
 
-      const input = document.createElement("input");
-      input.type = "text";
+      const input = document.createElement("textarea");
+      input.rows = 1;
       input.className = "task-text";
       input.value = task.text;
       input.autocomplete = "off";
+      autoSizeTextarea(input);
 
       row.appendChild(checkbox);
       row.appendChild(input);
@@ -234,6 +265,7 @@
         state.draggedId = taskId;
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", taskId);
+        setGlobalDragPayload(buildDragPayload(task));
       });
 
       row.addEventListener("dragover", (e) => {
@@ -265,6 +297,7 @@
       row.addEventListener("dragend", () => {
         state.isDragging = false;
         state.draggedId = null;
+        clearGlobalDragPayload();
       });
 
       input.addEventListener("blur", () => {
@@ -289,6 +322,11 @@
     }
 
     tasksField.appendChild(list);
+
+    // Recalculate heights after mount so multiline values keep full height.
+    tasksField.querySelectorAll(".task-text").forEach((el) => {
+      autoSizeTextarea(el);
+    });
 
     if (state.focusAfterRender) {
       const { id, start, end } = state.focusAfterRender;
@@ -414,6 +452,7 @@
     const idx = getTaskIndex(id);
     if (idx === -1) return;
     state.tasks[idx].text = input.value;
+    autoSizeTextarea(input);
   });
 
   tasksField.addEventListener("keydown", (e) => {
@@ -468,6 +507,61 @@
     splitPasteIntoTasks(id, text);
   });
 
+  tasksField.addEventListener("dragover", (e) => {
+    if (!isAuthed) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  });
+
+  tasksField.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    if (!isAuthed) return;
+
+    const payload = getGlobalDragPayload();
+    if (!payload) return;
+    if (payload.sourceBlock === GENERAL_BLOCK_ID) return;
+
+    const moved = createTask(payload.text, payload.checked, payload.dbId);
+    state.tasks.push(moved);
+    state.focusAfterRender = { id: moved.id };
+    render();
+
+    if (moved.dbId) {
+      const { error } = await supabase
+        .from("tasks")
+        .update({ type: "general", day_name: null, date: null })
+        .eq("id", moved.dbId)
+        .eq("user_id", authUserId);
+      if (error) console.error("Supabase move-to-general failed:", error);
+    } else if (!isTaskEmptyText(moved.text)) {
+      void persistTask(moved);
+    }
+
+    window.dispatchEvent(
+      new CustomEvent("task-cross-move", {
+        detail: {
+          sourceBlock: payload.sourceBlock,
+          sourceLocalId: payload.localId,
+          targetBlock: GENERAL_BLOCK_ID,
+        },
+      })
+    );
+
+    clearGlobalDragPayload();
+  });
+
+  window.addEventListener("task-cross-move", (e) => {
+    const detail = e.detail || {};
+    if (detail.sourceBlock !== GENERAL_BLOCK_ID) return;
+    if (detail.targetBlock === GENERAL_BLOCK_ID) return;
+
+    const idx = getTaskIndex(detail.sourceLocalId);
+    if (idx === -1) return;
+    state.tasks.splice(idx, 1);
+    if (state.tasks.length === 0) state.tasks = [createTask("", false, null)];
+    render();
+  });
+
   void initAuth();
 })();
 
@@ -475,6 +569,7 @@
   const dayRects = document.querySelectorAll(".day-rect");
   if (dayRects.length === 0) return;
   const supabase = window.supabaseClient;
+  const WEEK_CHANGE_EVENT = "week-offset-change";
 
   function getMondayStart() {
     const now = new Date();
@@ -482,7 +577,8 @@
     const mondayOffset = (todayDow + 6) % 7;
     const weekStart = new Date(now);
     weekStart.setHours(0, 0, 0, 0);
-    weekStart.setDate(now.getDate() - mondayOffset);
+    const weekOffset = Number(window.__weekOffset || 0);
+    weekStart.setDate(now.getDate() - mondayOffset + weekOffset * 7);
     return weekStart;
   }
 
@@ -537,7 +633,8 @@
     const tasksEl = dayRect.querySelector(".day-tasks");
     if (!tasksEl) return;
     const dayName = dayRect.dataset.day || "";
-    const dayMeta = getDayMeta(dayName);
+    let dayMeta = getDayMeta(dayName);
+    const blockId = `day:${dayName}`;
 
     const state = {
       tasks: [],
@@ -555,8 +652,37 @@
       return { id, dbId, text, checked };
     }
 
+    function buildDragPayload(task) {
+      return {
+        sourceBlock: blockId,
+        localId: task.id,
+        dbId: task.dbId ?? null,
+        text: task.text ?? "",
+        checked: !!task.checked,
+      };
+    }
+
+    function setGlobalDragPayload(payload) {
+      window.__dragTaskPayload = payload;
+    }
+
+    function getGlobalDragPayload() {
+      return window.__dragTaskPayload || null;
+    }
+
+    function clearGlobalDragPayload() {
+      window.__dragTaskPayload = null;
+    }
+
     function getTaskIndex(id) {
       return state.tasks.findIndex((t) => t.id === id);
+    }
+
+    function autoSizeTextarea(el) {
+      if (!el) return;
+      el.style.height = "auto";
+      const safeHeight = Math.max(el.scrollHeight || 0, 18);
+      el.style.height = `${safeHeight}px`;
     }
 
     async function deleteTaskFromDb(task) {
@@ -730,11 +856,12 @@
         checkbox.className = `task-checkbox${task.checked ? " checked" : ""}`;
         checkbox.setAttribute("aria-label", "Toggle task");
 
-        const input = document.createElement("input");
-        input.type = "text";
+        const input = document.createElement("textarea");
+        input.rows = 1;
         input.className = "task-text";
         input.value = task.text;
         input.autocomplete = "off";
+        autoSizeTextarea(input);
 
         const main = document.createElement("div");
         main.className = "task-main";
@@ -756,6 +883,7 @@
           state.draggedId = taskId;
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", taskId);
+          setGlobalDragPayload(buildDragPayload(task));
         });
 
         row.addEventListener("dragover", (e) => {
@@ -789,6 +917,7 @@
         row.addEventListener("dragend", () => {
           state.isDragging = false;
           state.draggedId = null;
+          clearGlobalDragPayload();
         });
 
         input.addEventListener("blur", () => {
@@ -812,6 +941,11 @@
       }
 
       tasksEl.appendChild(list);
+
+      // Recalculate heights after mount so multiline values keep full height.
+      tasksEl.querySelectorAll(".task-text").forEach((el) => {
+        autoSizeTextarea(el);
+      });
 
       if (state.focusAfterRender) {
         const { id, start, end } = state.focusAfterRender;
@@ -912,6 +1046,7 @@
       if (!id) return;
 
       setTextAndMaybeResort(id, input.value, input);
+      autoSizeTextarea(input);
     });
 
     tasksEl.addEventListener("keydown", (e) => {
@@ -950,6 +1085,50 @@
       render();
     });
 
+    tasksEl.addEventListener("dragover", (e) => {
+      if (!isAuthed) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    });
+
+    tasksEl.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      if (!isAuthed) return;
+
+      const payload = getGlobalDragPayload();
+      if (!payload) return;
+      if (payload.sourceBlock === blockId) return;
+
+      const moved = createTask(payload.text, payload.checked, payload.dbId);
+      state.tasks.push(moved);
+      stabilizeTimeSorted();
+      state.focusAfterRender = { id: moved.id };
+      render();
+
+      if (moved.dbId) {
+        const { error } = await supabase
+          .from("tasks")
+          .update({ type: "daily", day_name: dayMeta.dayName, date: dayMeta.date })
+          .eq("id", moved.dbId)
+          .eq("user_id", currentUserId);
+        if (error) console.error("Supabase move-to-day failed:", error);
+      } else if (!isTaskEmptyText(moved.text)) {
+        void persistTask(moved);
+      }
+
+      window.dispatchEvent(
+        new CustomEvent("task-cross-move", {
+          detail: {
+            sourceBlock: payload.sourceBlock,
+            sourceLocalId: payload.localId,
+            targetBlock: blockId,
+          },
+        })
+      );
+
+      clearGlobalDragPayload();
+    });
+
     async function setAuthUser(userId) {
       isAuthed = !!userId;
       currentUserId = userId || null;
@@ -965,6 +1144,27 @@
       stabilizeTimeSorted();
       render();
     }
+
+    window.addEventListener("task-cross-move", (e) => {
+      const detail = e.detail || {};
+      if (detail.sourceBlock !== blockId) return;
+      if (detail.targetBlock === blockId) return;
+
+      const idx = getTaskIndex(detail.sourceLocalId);
+      if (idx === -1) return;
+      state.tasks.splice(idx, 1);
+      if (state.tasks.length === 0) state.tasks.push(createTask("", false));
+      render();
+    });
+
+    window.addEventListener(WEEK_CHANGE_EVENT, async () => {
+      dayMeta = getDayMeta(dayName);
+      if (!isAuthed) return;
+      await loadTasksForDay();
+      ensureAtLeastOneTask();
+      stabilizeTimeSorted();
+      render();
+    });
 
     return { setAuthUser };
   }
@@ -996,6 +1196,8 @@
 })();
 
 (() => {
+  const WEEK_CHANGE_EVENT = "week-offset-change";
+  window.__weekOffset = Number(window.__weekOffset || 0);
   const weekdayToIndex = {
     Monday: 0,
     Tuesday: 1,
@@ -1006,14 +1208,19 @@
     Sunday: 6,
   };
 
-  function updateDayOfMonthLabels() {
+  function getWeekStart() {
     const now = new Date();
     const todayDow = now.getDay(); // 0=Sun..6=Sat
     const mondayOffset = (todayDow + 6) % 7; // 0 when today is Monday
 
     const weekStart = new Date(now);
     weekStart.setHours(0, 0, 0, 0);
-    weekStart.setDate(now.getDate() - mondayOffset);
+    weekStart.setDate(now.getDate() - mondayOffset + window.__weekOffset * 7);
+    return weekStart;
+  }
+
+  function updateDayOfMonthLabels() {
+    const weekStart = getWeekStart();
 
     const dayRects = document.querySelectorAll(".day-rect[data-day]");
     dayRects.forEach((rect) => {
@@ -1040,6 +1247,17 @@
 
     window.setTimeout(scheduleNextUpdate, delayMs + 50);
   }
+
+  function shiftWeek(delta) {
+    window.__weekOffset = Number(window.__weekOffset || 0) + delta;
+    updateDayOfMonthLabels();
+    window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
+  }
+
+  const prevBtn = document.getElementById("week-prev");
+  const nextBtn = document.getElementById("week-next");
+  if (prevBtn) prevBtn.addEventListener("click", () => shiftWeek(-1));
+  if (nextBtn) nextBtn.addEventListener("click", () => shiftWeek(1));
 
   scheduleNextUpdate();
 })();
@@ -1104,10 +1322,51 @@ async function logout() {
 }
 
 window.addEventListener("load", () => {
-  const btn = document.getElementById("logout-button");
-  if (!btn) return;
-  btn.addEventListener("click", () => {
-    void logout();
-  });
+  const overlay = document.getElementById("auth-overlay");
+  const trigger = document.getElementById("auth-trigger");
+  const closeBtn = document.getElementById("auth-close");
+  const signupBtn = document.getElementById("auth-signup");
+  const loginBtn = document.getElementById("auth-login");
+  const logoutBtn = document.getElementById("logout-button");
+
+  function openAuthPopup() {
+    if (!overlay) return;
+    overlay.hidden = false;
+  }
+
+  function closeAuthPopup() {
+    if (!overlay) return;
+    overlay.hidden = true;
+  }
+
+  if (trigger) trigger.addEventListener("click", openAuthPopup);
+  if (closeBtn) closeBtn.addEventListener("click", closeAuthPopup);
+
+  if (overlay) {
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeAuthPopup();
+    });
+  }
+
+  if (signupBtn) {
+    signupBtn.addEventListener("click", async () => {
+      await signUp();
+      closeAuthPopup();
+    });
+  }
+
+  if (loginBtn) {
+    loginBtn.addEventListener("click", async () => {
+      await login();
+      closeAuthPopup();
+    });
+  }
+
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", async () => {
+      await logout();
+      closeAuthPopup();
+    });
+  }
 });
 

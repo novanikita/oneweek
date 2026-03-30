@@ -8,16 +8,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
   </head>
   <body>
-
-    <input id="email" placeholder="Email">
-    <input id="password" type="password" placeholder="Password">
-
-    <button onclick="signUp()">Регистрация</button>
-    <button onclick="login()">Вход</button>
-
-    <ul id="taskList"></ul>
-
-    <button id="logout-button">Logout</button>
     <script>
       window.supabaseClient = supabase.createClient(
         "https://ywofdvbtcbvkkjxcazlu.supabase.co",
@@ -27,7 +17,15 @@
 
     <main class="layout">
       <section class="panel week-panel" aria-label="Week">
-        <h1>week</h1>
+        <div class="panel-titlebar">
+          <h1 class="panel-title">week</h1>
+          <button class="icon-button" type="button" id="week-prev" aria-label="Previous week">
+            ←
+          </button>
+          <button class="icon-button" type="button" id="week-next" aria-label="Next week">
+            →
+          </button>
+        </div>
         <div class="week-grid">
           <div class="rectangle day-rect" data-day="Monday">
             <div class="day-label">Monday</div>
@@ -85,7 +83,12 @@
       </section>
 
       <section class="panel tasks-panel" aria-label="Tasks">
-        <h1>tasks</h1>
+        <div class="panel-titlebar panel-titlebar-right">
+          <h1 class="panel-title">tasks</h1>
+          <button class="icon-button" type="button" id="auth-trigger" aria-label="User">
+            👤
+          </button>
+        </div>
         <div
           class="rectangle tasks-field"
           id="tasks-field"
@@ -93,6 +96,21 @@
         ></div>
       </section>
     </main>
+
+    <div class="modal-overlay" id="auth-overlay" hidden>
+      <div class="modal rectangle" role="dialog" aria-modal="true" aria-label="Authentication">
+        <button type="button" class="modal-close" id="auth-close" aria-label="Close">
+          ×
+        </button>
+        <input id="email" placeholder="Email" />
+        <input id="password" type="password" placeholder="Password" />
+        <div class="modal-actions">
+          <button type="button" id="auth-signup">Регистрация</button>
+          <button type="button" id="auth-login">Вход</button>
+          <button type="button" id="logout-button">Logout</button>
+        </div>
+      </div>
+    </div>
 
     <script src="./js/script.js"></script>
   </body>
