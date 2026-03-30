@@ -1,0 +1,180 @@
+:root {
+  font-size: 1em;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: sans-serif;
+  color: #A62720;
+  background:rgb(255, 212, 226);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 100vh;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
+  padding: 1em;
+  min-width: 0;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 400;
+}
+
+.week-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 0.75em;
+  flex: 1;
+  min-height: 0;
+}
+
+.rectangle {
+  background:rgb(255, 212, 226);
+  border: 0.05em solid #A62720;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 4em;
+}
+
+.tasks-field {
+  flex: 1;
+  min-height: 0;
+  display: block; /* override .rectangle flex-centering for tasks list */
+  overflow: auto;
+  cursor: text;
+}
+
+@media (max-width: 700px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .tasks-field {
+    min-height: 40vh;
+  }
+}
+
+.tasks-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 0.5em;
+  padding: 0.25em 0.5em;
+}
+
+.task-checkbox {
+  flex: 0 0 auto;
+  width: 1.2em;
+  height: 1.2em;
+  border: 0.05em solid #A62720;
+  background:rgb(255, 212, 226);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.task-checkbox::after {
+  content: "";
+  display: block;
+  font-size: 1em;
+  line-height: 1;
+}
+
+.task-checkbox.checked {
+  background: #A62720;
+}
+
+.task-checkbox.checked::after {
+  content: "✓";
+  color: #fff;
+}
+
+.task-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 1em;
+  border: 0;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  color: #A62720;
+}
+
+.task-text:focus {
+  outline: none;
+  outline-offset: 0;
+}
+
+.task-row.completed {
+  opacity: 0.5;
+}
+
+.task-row.completed .task-text {
+  text-decoration: line-through;
+  color: #A62720;
+}
+
+.day-rect {
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+}
+
+.day-label {
+  padding-top: 0.25em;
+  padding-left: 0.5em; /* matches task text indentation */
+  align-self: flex-start;
+}
+
+.day-tasks {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  cursor: text;
+  display: block;
+}
+
+.day-tasks .task-row {
+  align-items: flex-start;
+}
+
+.day-tasks .task-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.day-tasks .task-time-bar {
+  width: 100%;
+  height: 0.15em;
+  background: #A62720;
+  opacity: 0.3;
+  margin-top: 0.15em;
+}

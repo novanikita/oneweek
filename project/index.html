@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>One Week</title>
+    <link rel="stylesheet" href="./css/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
+  </head>
+  <body>
+
+    <input id="email" placeholder="Email">
+    <input id="password" type="password" placeholder="Password">
+
+    <button onclick="signUp()">Регистрация</button>
+    <button onclick="login()">Вход</button>
+
+    <ul id="taskList"></ul>
+
+    <button id="logout-button">Logout</button>
+    <script>
+      window.supabaseClient = supabase.createClient(
+        "https://ywofdvbtcbvkkjxcazlu.supabase.co",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl3b2ZkdmJ0Y2J2a2tqeGNhemx1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NjQwMjgsImV4cCI6MjA5MDQ0MDAyOH0.n5eglSosCp6M3mH8i559VczJxVFy73t4U6npUPIVxoY"
+      );
+    </script>
+
+    <main class="layout">
+      <section class="panel week-panel" aria-label="Week">
+        <h1>week</h1>
+        <div class="week-grid">
+          <div class="rectangle day-rect" data-day="Monday">
+            <div class="day-label">Monday</div>
+            <div class="day-tasks" id="day-Monday" aria-label="Monday tasks"></div>
+          </div>
+          <div class="rectangle day-rect" data-day="Tuesday">
+            <div class="day-label">Tuesday</div>
+            <div
+              class="day-tasks"
+              id="day-Tuesday"
+              aria-label="Tuesday tasks"
+            ></div>
+          </div>
+          <div class="rectangle day-rect" data-day="Wednesday">
+            <div class="day-label">Wednesday</div>
+            <div
+              class="day-tasks"
+              id="day-Wednesday"
+              aria-label="Wednesday tasks"
+            ></div>
+          </div>
+          <div class="rectangle day-rect" data-day="Thursday">
+            <div class="day-label">Thursday</div>
+            <div
+              class="day-tasks"
+              id="day-Thursday"
+              aria-label="Thursday tasks"
+            ></div>
+          </div>
+          <div class="rectangle day-rect" data-day="Friday">
+            <div class="day-label">Friday</div>
+            <div class="day-tasks" id="day-Friday" aria-label="Friday tasks"></div>
+          </div>
+          <div class="rectangle day-rect" data-day="Saturday">
+            <div class="day-label">Saturday</div>
+            <div
+              class="day-tasks"
+              id="day-Saturday"
+              aria-label="Saturday tasks"
+            ></div>
+          </div>
+          <div class="rectangle day-rect" data-day="Sunday">
+            <div class="day-label">Sunday</div>
+            <div class="day-tasks" id="day-Sunday" aria-label="Sunday tasks"></div>
+          </div>
+          <div class="rectangle day-rect" data-day="Next week">
+            <div class="day-label">Next week</div>
+            <div
+              class="day-tasks"
+              id="day-Next-week"
+              aria-label="Next week tasks"
+            ></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel tasks-panel" aria-label="Tasks">
+        <h1>tasks</h1>
+        <div
+          class="rectangle tasks-field"
+          id="tasks-field"
+          aria-label="Tasks area"
+        ></div>
+      </section>
+    </main>
+
+    <script src="./js/script.js"></script>
+  </body>
+</html>
