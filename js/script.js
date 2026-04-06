@@ -1381,13 +1381,14 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       state.tasks[idx].text = text;
       const afterMinutes = parseTimeMinutes(state.tasks[idx].text);
 
+      // Autosave every edit so title text after time is not lost.
+      if (isAuthed && !isTaskEmptyText(state.tasks[idx].text)) {
+        void persistTask(state.tasks[idx]);
+      }
+
       if (beforeMinutes === afterMinutes) return;
 
       stabilizeTimeSorted();
-      const taskAfterSort = state.tasks.find((t) => t.id === taskId);
-      if (taskAfterSort && isAuthed && !isTaskEmptyText(taskAfterSort.text)) {
-        void persistTask(taskAfterSort);
-      }
       state.focusAfterRender = {
         id: taskId,
         start: input.selectionStart,
