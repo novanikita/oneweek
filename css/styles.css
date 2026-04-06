@@ -10,12 +10,29 @@ body {
   margin: 0;
   font-family: sans-serif;
   color: #A62720;
-  background:rgb(255, 212, 226);
+  background: rgb(255, 212, 226);
+}
+
+body.week-offset-away {
+  background: #fff;
+}
+
+body.week-offset-away .rectangle {
+  background: #fff;
+}
+
+body.week-offset-away .task-checkbox {
+  background: #fff;
+}
+
+body.week-offset-away .task-commit,
+body.week-offset-away .task-delete {
+  background: #fff;
 }
 
 .layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 2fr 1fr;
   min-height: 100vh;
 }
 
@@ -93,6 +110,16 @@ h1 {
   cursor: pointer;
 }
 
+.auth-status {
+  margin: 0;
+  padding-right: 1.75em;
+  font: inherit;
+  font-size: 0.95em;
+  line-height: 1.35;
+  color: inherit;
+  opacity: 0.92;
+}
+
 .modal input {
   font: inherit;
   color: inherit;
@@ -164,6 +191,17 @@ h1 {
   min-width: 0;
   gap: 0.5em;
   padding: 0.25em 0.5em;
+  box-sizing: border-box;
+  border: 0.05em solid transparent;
+  border-radius: 0.15em;
+}
+
+.task-row:has(.task-text:focus) {
+  border-color: #a62720;
+}
+
+.task-row.task-row-sub {
+  padding-left: 2em;
 }
 
 .task-checkbox {
@@ -193,6 +231,63 @@ h1 {
 .task-checkbox.checked::after {
   content: "✓";
   color: #fff;
+}
+
+.task-commit {
+  flex: 0 0 auto;
+  font: inherit;
+  color: #a62720;
+  width: 1.4em;
+  height: 1.4em;
+  padding: 0;
+  border: 0.05em solid #a62720;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.task-row:has(.task-text:focus) .task-commit {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.task-commit::after {
+  content: "✓";
+  font-size: 0.9em;
+}
+
+.task-delete {
+  flex: 0 0 auto;
+  font: inherit;
+  color: #a62720;
+  width: 1.4em;
+  height: 1.4em;
+  padding: 0;
+  border: 0.05em solid #a62720;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.task-row:has(.task-text:focus) .task-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.task-delete::after {
+  content: "🗑";
+  font-size: 0.75em;
+  line-height: 1;
 }
 
 .task-text {
@@ -251,7 +346,44 @@ h1 {
 }
 
 .day-tasks .task-row {
-  align-items: flex-start;
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto;
+  align-items: start;
+  column-gap: 0.5em;
+}
+
+.day-tasks .task-row:has(.task-text:focus),
+.day-tasks .task-row:has(.task-commit:focus),
+.day-tasks .task-row:has(.task-delete:focus) {
+  z-index: 4;
+}
+
+.day-tasks .task-checkbox {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.day-tasks .task-row-actions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 0.15em;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.5em;
+  align-items: center;
+  justify-content: flex-start;
+  pointer-events: none;
+}
+
+.day-tasks .task-row:has(.task-text:focus) .task-row-actions,
+.day-tasks .task-row:has(.task-commit:focus) .task-row-actions,
+.day-tasks .task-row:has(.task-delete:focus) .task-row-actions {
+  pointer-events: auto;
 }
 
 .day-tasks .task-text {
@@ -261,6 +393,9 @@ h1 {
 }
 
 .day-tasks .task-main {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -270,12 +405,4 @@ h1 {
 .task-main {
   flex: 1;
   min-width: 0;
-}
-
-.day-tasks .task-time-bar {
-  width: 100%;
-  height: 0.15em;
-  background: #A62720;
-  opacity: 0.3;
-  margin-top: 0.15em;
 }
