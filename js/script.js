@@ -211,12 +211,15 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     task.dbId = null;
   }
 
-  async function insertOrUpdateTaskInDb(task) {
+  async function insertOrUpdateTaskInDb(task, snapshot) {
     if (!isAuthed || !authUserId) return;
     if (!task) return;
 
-    const content = task.text ?? "";
-    const completed = !!task.checked;
+    const source = snapshot || task;
+    const content = String(source.text ?? "");
+    const completed = !!source.checked;
+    const isSubtask = !!source.subtask;
+    const dbId = source.dbId ?? task.dbId ?? null;
 
     if (isTaskEmptyText(content)) {
       await deleteTaskFromDb(task);
@@ -224,11 +227,11 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     }
 
     // If it exists already, update it. Otherwise insert a new row.
-    if (task.dbId) {
+    if (dbId) {
       const { error } = await supabase
         .from("tasks")
-        .update({ content, completed, is_subtask: !!task.subtask })
-        .eq("id", task.dbId)
+        .update({ content, completed, is_subtask: isSubtask })
+        .eq("id", dbId)
         .eq("user_id", authUserId);
 
       if (error) console.error("Supabase update failed:", error);
@@ -243,7 +246,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
         completed,
         type: "general",
         date: getVisibleWeekMondayIso(),
-        is_subtask: !!task.subtask,
+        is_subtask: isSubtask,
       })
       .select("id")
       .single();
@@ -262,8 +265,14 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     if (!key) return;
 
     const tail = pendingPersist.get(key);
+    const snapshot = {
+      dbId: task.dbId ?? null,
+      text: String(task.text ?? ""),
+      checked: !!task.checked,
+      subtask: !!task.subtask,
+    };
     const next = (tail ?? Promise.resolve())
-      .then(() => insertOrUpdateTaskInDb(task))
+      .then(() => insertOrUpdateTaskInDb(task, snapshot))
       .catch((err) => {
         console.error("Supabase persist failed:", err);
       });
@@ -970,21 +979,24 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       task.dbId = null;
     }
 
-    async function insertOrUpdateTaskInDb(task) {
+    async function insertOrUpdateTaskInDb(task, snapshot) {
       if (!supabase || !isAuthed || !currentUserId || !task) return;
-      const content = task.text ?? "";
-      const completed = !!task.checked;
+      const source = snapshot || task;
+      const content = String(source.text ?? "");
+      const completed = !!source.checked;
+      const isSubtask = !!source.subtask;
+      const dbId = source.dbId ?? task.dbId ?? null;
 
       if (isTaskEmptyText(content)) {
         await deleteTaskFromDb(task);
         return;
       }
 
-      if (task.dbId) {
+      if (dbId) {
         const { error } = await supabase
           .from("tasks")
-          .update({ content, completed, is_subtask: !!task.subtask })
-          .eq("id", task.dbId)
+          .update({ content, completed, is_subtask: isSubtask })
+          .eq("id", dbId)
           .eq("user_id", currentUserId);
 
         if (error) console.error("Supabase daily update failed:", error);
@@ -1000,7 +1012,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
           type: "daily",
           day_name: dayMeta.dayName,
           date: dayMeta.date,
-          is_subtask: !!task.subtask,
+          is_subtask: isSubtask,
         })
         .select("id")
         .single();
@@ -1017,8 +1029,14 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       if (!task?.id) return;
       const key = task.id;
       const tail = pendingPersist.get(key);
+      const snapshot = {
+        dbId: task.dbId ?? null,
+        text: String(task.text ?? ""),
+        checked: !!task.checked,
+        subtask: !!task.subtask,
+      };
       const next = (tail ?? Promise.resolve())
-        .then(() => insertOrUpdateTaskInDb(task))
+        .then(() => insertOrUpdateTaskInDb(task, snapshot))
         .catch((err) => {
           console.error("Supabase daily persist failed:", err);
         });
@@ -1107,7 +1125,11 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
         ensureAtLeastOneTask();
         return { needRender: true };
       }
-      await persistTask(task);
+      // Time-tasks differ only by ordering: sort timed tasks among themselves on commit.
+      stabilizeTimeSorted();
+      const taskAfterSort = state.tasks.find((t) => t.id === taskId);
+      if (!taskAfterSort) return { needRender: true };
+      await persistTask(taskAfterSort);
       return { needRender: false };
     }
 
@@ -1207,10 +1229,8 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
         });
         commitBtn.addEventListener("click", async () => {
           const { needRender } = await syncTaskFromInput(taskId);
-          if (needRender) {
-            render();
-            return;
-          }
+          render();
+          if (needRender) return;
           input.blur();
         });
 
@@ -1297,8 +1317,8 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
 
         input.addEventListener("blur", () => {
           void (async () => {
-            const { needRender } = await syncTaskFromInput(taskId);
-            if (needRender) render();
+            await syncTaskFromInput(taskId);
+            render();
           })();
         });
       }
@@ -1343,6 +1363,25 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       render();
     }
 
+    /** Click on empty list area: reuse empty draft row or insert a new one, then focus. */
+    function beginNewPlanFromEmptyClick() {
+      ensureAtLeastOneTask();
+      for (let i = state.tasks.length - 1; i >= 0; i--) {
+        const t = state.tasks[i];
+        if (!t.checked && isTaskEmptyText(t.text)) {
+          state.focusAfterRender = { id: t.id };
+          render();
+          return;
+        }
+      }
+      const fc = firstCheckedTaskIndex(state.tasks);
+      const insertAt = fc === -1 ? state.tasks.length : fc;
+      const newTask = createTask("", false, null, false);
+      state.tasks.splice(insertAt, 0, newTask);
+      state.focusAfterRender = { id: newTask.id };
+      render();
+    }
+
     function toggleChecked(id) {
       const idx = getTaskIndex(id);
       if (idx === -1) return;
@@ -1373,28 +1412,11 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       return newTask;
     }
 
-    function setTextAndMaybeResort(taskId, text, input) {
+    function setTextAndMaybeResort(taskId, text) {
       const idx = getTaskIndex(taskId);
       if (idx === -1) return;
-
-      const beforeMinutes = parseTimeMinutes(state.tasks[idx].text);
+      // Keep typing path identical to normal tasks: plain text only.
       state.tasks[idx].text = text;
-      const afterMinutes = parseTimeMinutes(state.tasks[idx].text);
-
-      // Autosave every edit so title text after time is not lost.
-      if (isAuthed && !isTaskEmptyText(state.tasks[idx].text)) {
-        void persistTask(state.tasks[idx]);
-      }
-
-      if (beforeMinutes === afterMinutes) return;
-
-      stabilizeTimeSorted();
-      state.focusAfterRender = {
-        id: taskId,
-        start: input.selectionStart,
-        end: input.selectionEnd,
-      };
-      render();
     }
 
     dayRect.addEventListener("click", (e) => {
@@ -1431,7 +1453,8 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
         return;
       }
 
-      focusLastTask();
+      if (!tasksEl.contains(e.target)) return;
+      beginNewPlanFromEmptyClick();
     });
 
     tasksEl.addEventListener("input", (e) => {
@@ -1443,7 +1466,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       const id = row?.dataset.id;
       if (!id) return;
 
-      setTextAndMaybeResort(id, input.value, input);
+      setTextAndMaybeResort(id, input.value);
       autoSizeTextarea(input);
     });
 
