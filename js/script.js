@@ -1377,15 +1377,8 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       const idx = getTaskIndex(taskId);
       if (idx === -1) return;
 
-      const normalized = moveTimeToStart(text);
-      if (normalized !== text) {
-        input.value = normalized;
-        const end = normalized.length;
-        input.setSelectionRange(end, end);
-      }
-
       const beforeMinutes = parseTimeMinutes(state.tasks[idx].text);
-      state.tasks[idx].text = normalized;
+      state.tasks[idx].text = text;
       const afterMinutes = parseTimeMinutes(state.tasks[idx].text);
 
       if (beforeMinutes === afterMinutes) return;
