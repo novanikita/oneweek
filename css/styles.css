@@ -120,6 +120,13 @@ h1 {
   opacity: 0.92;
 }
 
+.auth-message {
+  margin: 0;
+  min-height: 1.2em;
+  font-size: 0.9em;
+  line-height: 1.3;
+}
+
 .modal input {
   font: inherit;
   color: inherit;
@@ -143,6 +150,11 @@ h1 {
   cursor: pointer;
 }
 
+.modal-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .week-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -153,7 +165,7 @@ h1 {
 }
 
 .rectangle {
-  background:rgb(255, 212, 226);
+  background: rgb(255, 212, 226);
   border: 0.05em solid #A62720;
   display: flex;
   align-items: center;
@@ -169,13 +181,50 @@ h1 {
   cursor: text;
 }
 
-@media (max-width: 700px) {
+@media (max-width: 900px) {
+  body {
+    font-size: clamp(14px, 3.5vw, 16px);
+  }
+
   .layout {
     grid-template-columns: 1fr;
+    grid-template-rows: clamp(22rem, 58dvh, 34rem) minmax(0, 1fr);
+    min-height: 100dvh;
+  }
+
+  .panel {
+    min-height: 0;
+    padding: 0.75em;
+    gap: 0.75em;
+  }
+
+  .panel-titlebar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: inherit;
+  }
+
+  .week-panel {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .week-grid {
+    overflow: auto;
+  }
+
+  .tasks-panel {
+    min-height: 0;
   }
 
   .tasks-field {
-    min-height: 40vh;
+    min-height: 0;
+    height: 100%;
+  }
+
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
   }
 }
 
@@ -191,7 +240,6 @@ h1 {
   min-width: 0;
   gap: 0.5em;
   padding: 0.25em 0.5em;
-  box-sizing: border-box;
   border: 0.05em solid transparent;
   border-radius: 0.15em;
 }
@@ -209,7 +257,7 @@ h1 {
   width: 1.2em;
   height: 1.2em;
   border: 0.05em solid #A62720;
-  background:rgb(255, 212, 226);
+  background: rgb(255, 212, 226);
   padding: 0;
   display: flex;
   align-items: center;
@@ -384,12 +432,6 @@ h1 {
 .day-tasks .task-row:has(.task-commit:focus) .task-row-actions,
 .day-tasks .task-row:has(.task-delete:focus) .task-row-actions {
   pointer-events: auto;
-}
-
-.day-tasks .task-text {
-  font-family: inherit;
-  font-size: 1em;
-  color: #A62720;
 }
 
 .day-tasks .task-main {

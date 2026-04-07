@@ -1,12 +1,21 @@
+/**
+ * One Week — shared helpers and task utilities used by the general panel,
+ * week/day panels, week navigation, and auth UI.
+ */
+
+/** Local midnight Monday of the week containing `anchorDate`; `weekOffsetWeeks` shifts by whole weeks. */
+function getWeekMondayStart(anchorDate, weekOffsetWeeks = 0) {
+  const d = new Date(anchorDate);
+  d.setHours(0, 0, 0, 0);
+  const dow = d.getDay();
+  const mondayOffset = (dow + 6) % 7;
+  d.setDate(d.getDate() - mondayOffset + weekOffsetWeeks * 7);
+  return d;
+}
+
 /** Monday 00:00 of the week currently shown (week arrows / __weekOffset). */
 function getVisibleWeekStartDate() {
-  const now = new Date();
-  const todayDow = now.getDay();
-  const mondayOffset = (todayDow + 6) % 7;
-  const weekStart = new Date(now);
-  weekStart.setHours(0, 0, 0, 0);
-  weekStart.setDate(now.getDate() - mondayOffset + Number(window.__weekOffset || 0) * 7);
-  return weekStart;
+  return getWeekMondayStart(new Date(), Number(window.__weekOffset || 0));
 }
 
 function toIsoDateFromDate(date) {
@@ -20,19 +29,57 @@ function getVisibleWeekMondayIso() {
   return toIsoDateFromDate(getVisibleWeekStartDate());
 }
 
-/** Real “this week” Monday — for one-time migration of legacy rows without `date`. */
+/** Calendar “this week” Monday — for one-time migration of legacy rows without `date`. */
 function getCalendarWeekMondayIso() {
-  const now = new Date();
-  const todayDow = now.getDay();
-  const mondayOffset = (todayDow + 6) % 7;
-  const weekStart = new Date(now);
-  weekStart.setHours(0, 0, 0, 0);
-  weekStart.setDate(now.getDate() - mondayOffset);
-  return toIsoDateFromDate(weekStart);
+  return toIsoDateFromDate(getWeekMondayStart(new Date(), 0));
+}
+
+function isTaskEmptyText(text) {
+  return (text ?? "").trim() === "";
 }
 
 if (typeof window !== "undefined") {
   window.__weekOffset = Number(window.__weekOffset || 0);
+}
+
+const WEEK_CHANGE_EVENT = "week-offset-change";
+
+function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist failed:") {
+  const pendingPersist = new Map();
+  return async function persistTask(task) {
+    if (!task?.id) return;
+    const key = task.id;
+    const tail = pendingPersist.get(key);
+    const snapshot = {
+      dbId: task.dbId ?? null,
+      text: String(task.text ?? ""),
+      checked: !!task.checked,
+      subtask: !!task.subtask,
+    };
+    const next = (tail ?? Promise.resolve())
+      .then(() => insertOrUpdateTaskInDb(task, snapshot))
+      .catch((err) => {
+        console.error(logPrefix, err);
+      });
+    pendingPersist.set(key, next);
+    try {
+      await next;
+    } finally {
+      if (pendingPersist.get(key) === next) {
+        pendingPersist.delete(key);
+      }
+    }
+  };
+}
+
+function registerDraftFlush(flushFn) {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "hidden") return;
+    void flushFn();
+  });
+  window.addEventListener("pagehide", () => {
+    void flushFn();
+  });
 }
 
 function normalizeSubtaskFlags(tasks) {
@@ -116,11 +163,25 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
   return insertAt;
 }
 
+/** Toggle task completion and keep unchecked tasks above completed tasks. */
+function toggleAndRepositionTask(tasks, idx) {
+  const task = tasks[idx];
+  task.checked = !task.checked;
+  tasks.splice(idx, 1);
+  if (task.checked) {
+    tasks.push(task);
+  } else {
+    const fc = firstCheckedTaskIndex(tasks);
+    const insertIndex = fc === -1 ? tasks.length : fc;
+    tasks.splice(insertIndex, 0, task);
+  }
+  return task;
+}
+
 (() => {
   const tasksField = document.getElementById("tasks-field");
   if (!tasksField) return;
   const GENERAL_BLOCK_ID = "general";
-  const WEEK_CHANGE_EVENT = "week-offset-change";
 
   const state = {
     tasks: [],
@@ -130,14 +191,9 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     focusAfterRender: null, // { id, start, end }
   };
 
-  function isTaskEmptyText(text) {
-    return (text ?? "").trim() === "";
-  }
-
   const supabase = window.supabaseClient;
   let authUserId = null;
   let isAuthed = false;
-  const pendingPersist = new Map();
 
   function createTask(text = "", checked = false, dbId = null, subtask = false) {
     const id = `task-${state.nextId++}`;
@@ -259,32 +315,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     task.dbId = data?.id ?? null;
   }
 
-  async function persistTask(task) {
-    if (!task) return;
-    const key = task.id;
-    if (!key) return;
-
-    const tail = pendingPersist.get(key);
-    const snapshot = {
-      dbId: task.dbId ?? null,
-      text: String(task.text ?? ""),
-      checked: !!task.checked,
-      subtask: !!task.subtask,
-    };
-    const next = (tail ?? Promise.resolve())
-      .then(() => insertOrUpdateTaskInDb(task, snapshot))
-      .catch((err) => {
-        console.error("Supabase persist failed:", err);
-      });
-    pendingPersist.set(key, next);
-    try {
-      await next;
-    } finally {
-      if (pendingPersist.get(key) === next) {
-        pendingPersist.delete(key);
-      }
-    }
-  }
+  const persistTask = createPersistTask(insertOrUpdateTaskInDb, "Supabase persist failed:");
 
   async function loadTasksForUser() {
     if (!supabase) {
@@ -332,11 +363,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       subtask: !!row.is_subtask,
     }));
     normalizeSubtaskFlags(state.tasks);
-
-    // Apply checkbox rule on load: checked tasks move to the bottom.
-    const unchecked = state.tasks.filter((t) => !t.checked);
-    const checked = state.tasks.filter((t) => t.checked);
-    state.tasks = [...unchecked, ...checked];
+    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
 
     if (state.tasks.length === 0) {
       state.tasks = [createTask("", false, null)];
@@ -406,6 +433,12 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     return { needRender: false };
   }
 
+  async function commitTask(taskId) {
+    const { needRender } = await syncTaskFromInput(taskId);
+    render();
+    return !needRender;
+  }
+
   function focusTask(id, start, end) {
     const row = tasksField.querySelector(`.task-row[data-id="${id}"]`);
     if (!row) return;
@@ -469,11 +502,8 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
         e.preventDefault();
       });
       commitBtn.addEventListener("click", async () => {
-        const { needRender } = await syncTaskFromInput(taskId);
-        if (needRender) {
-          render();
-          return;
-        }
+        const ok = await commitTask(taskId);
+        if (!ok) return;
         input.blur();
       });
 
@@ -559,8 +589,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
 
       input.addEventListener("blur", () => {
         void (async () => {
-          const { needRender } = await syncTaskFromInput(taskId);
-          if (needRender) render();
+          await commitTask(taskId);
         })();
       });
     }
@@ -609,21 +638,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
   function toggleCheckedAndReorder(id, caret) {
     const idx = getTaskIndex(id);
     if (idx === -1) return;
-
-    const task = state.tasks[idx];
-    task.checked = !task.checked;
-
-    // Checked tasks must move to the bottom.
-    if (task.checked) {
-      state.tasks.splice(idx, 1);
-      state.tasks.push(task);
-    } else {
-      // Unchecked tasks should return to the unchecked section.
-      state.tasks.splice(idx, 1);
-      const firstCheckedIndex = state.tasks.findIndex((t) => t.checked);
-      const insertIndex = firstCheckedIndex === -1 ? state.tasks.length : firstCheckedIndex;
-      state.tasks.splice(insertIndex, 0, task);
-    }
+    const task = toggleAndRepositionTask(state.tasks, idx);
 
     state.focusAfterRender = {
       id: task.id,
@@ -735,14 +750,23 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     e.preventDefault();
 
     void (async () => {
-      const { needRender } = await syncTaskFromInput(id);
-      if (needRender) {
-        render();
-        return;
-      }
+      const ok = await commitTask(id);
+      if (!ok) return;
       insertEmptyTaskBelow(id);
     })();
   });
+
+  async function flushFocusedGeneralInput() {
+    const active = document.activeElement;
+    if (!active || !active.classList || !active.classList.contains("task-text")) return;
+    if (!tasksField.contains(active)) return;
+    const row = active.closest(".task-row");
+    const id = row?.dataset.id;
+    if (!id) return;
+    await syncTaskFromInput(id);
+  }
+
+  registerDraftFlush(flushFocusedGeneralInput);
 
   tasksField.addEventListener("paste", (e) => {
     if (!isAuthed) return;
@@ -847,7 +871,6 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
   const dayRects = document.querySelectorAll(".day-rect");
   if (dayRects.length === 0) return;
   const supabase = window.supabaseClient;
-  const WEEK_CHANGE_EVENT = "week-offset-change";
 
   function getDayMeta(dayName) {
     const weekStart = getVisibleWeekStartDate();
@@ -871,10 +894,6 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     const date = new Date(weekStart);
     date.setDate(weekStart.getDate() + (idx ?? 0));
     return { dayName, date: toIsoDateFromDate(date) };
-  }
-
-  function isTaskEmptyText(text) {
-    return (text ?? "").trim() === "";
   }
 
   function parseTimeMinutes(text) {
@@ -925,7 +944,6 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     };
     let currentUserId = null;
     let isAuthed = false;
-    const pendingPersist = new Map();
 
     function createTask(text = "", checked = false, dbId = null, subtask = false) {
       const id = `day-task-${state.nextId++}`;
@@ -1025,30 +1043,10 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       task.dbId = data?.id ?? null;
     }
 
-    async function persistTask(task) {
-      if (!task?.id) return;
-      const key = task.id;
-      const tail = pendingPersist.get(key);
-      const snapshot = {
-        dbId: task.dbId ?? null,
-        text: String(task.text ?? ""),
-        checked: !!task.checked,
-        subtask: !!task.subtask,
-      };
-      const next = (tail ?? Promise.resolve())
-        .then(() => insertOrUpdateTaskInDb(task, snapshot))
-        .catch((err) => {
-          console.error("Supabase daily persist failed:", err);
-        });
-      pendingPersist.set(key, next);
-      try {
-        await next;
-      } finally {
-        if (pendingPersist.get(key) === next) {
-          pendingPersist.delete(key);
-        }
-      }
-    }
+    const persistTask = createPersistTask(
+      insertOrUpdateTaskInDb,
+      "Supabase daily persist failed:"
+    );
 
     async function loadTasksForDay() {
       if (!supabase || !isAuthed || !currentUserId) return;
@@ -1131,6 +1129,12 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       if (!taskAfterSort) return { needRender: true };
       await persistTask(taskAfterSort);
       return { needRender: false };
+    }
+
+    async function commitTask(taskId) {
+      const { needRender } = await syncTaskFromInput(taskId);
+      render();
+      return !needRender;
     }
 
     function stabilizeTimeSorted() {
@@ -1228,9 +1232,8 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
           e.preventDefault();
         });
         commitBtn.addEventListener("click", async () => {
-          const { needRender } = await syncTaskFromInput(taskId);
-          render();
-          if (needRender) return;
+          const ok = await commitTask(taskId);
+          if (!ok) return;
           input.blur();
         });
 
@@ -1317,8 +1320,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
 
         input.addEventListener("blur", () => {
           void (async () => {
-            await syncTaskFromInput(taskId);
-            render();
+            await commitTask(taskId);
           })();
         });
       }
@@ -1385,19 +1387,7 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     function toggleChecked(id) {
       const idx = getTaskIndex(id);
       if (idx === -1) return;
-      const task = state.tasks[idx];
-      task.checked = !task.checked;
-
-      if (task.checked) {
-        state.tasks.splice(idx, 1);
-        state.tasks.push(task);
-      } else {
-        state.tasks.splice(idx, 1);
-        const fc = firstCheckedTaskIndex(state.tasks);
-        const insertIndex = fc === -1 ? state.tasks.length : fc;
-        state.tasks.splice(insertIndex, 0, task);
-      }
-
+      const task = toggleAndRepositionTask(state.tasks, idx);
       if (!isTaskEmptyText(task.text)) void persistTask(task);
       render();
     }
@@ -1488,16 +1478,25 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
       e.preventDefault();
 
       void (async () => {
-        const { needRender } = await syncTaskFromInput(id);
-        if (needRender) {
-          render();
-          return;
-        }
+        const ok = await commitTask(id);
+        if (!ok) return;
         insertEmptyTaskBelow(id);
         stabilizeTimeSorted();
         render();
       })();
     });
+
+    async function flushFocusedDayInput() {
+      const active = document.activeElement;
+      if (!active || !active.classList || !active.classList.contains("task-text")) return;
+      if (!tasksEl.contains(active)) return;
+      const row = active.closest(".task-row");
+      const id = row?.dataset.id;
+      if (!id) return;
+      await syncTaskFromInput(id);
+    }
+
+    registerDraftFlush(flushFocusedDayInput);
 
     tasksEl.addEventListener("dragover", (e) => {
       if (!isAuthed) return;
@@ -1627,9 +1626,6 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
 })();
 
 (() => {
-  const WEEK_CHANGE_EVENT = "week-offset-change";
-  window.__weekOffset = Number(window.__weekOffset || 0);
-
   const weekdayToIndex = {
     Monday: 0,
     Tuesday: 1,
@@ -1696,59 +1692,57 @@ async function signUp() {
   const supabase = window.supabaseClient;
   if (!supabase) {
     console.error("Supabase client missing.");
-    return;
+    return { ok: false, error: "Клиент авторизации не инициализирован." };
   }
 
   const email = document.getElementById("email").value;
   const password = document.getElementById("password").value;
 
-  const { data, error } = await supabase.auth.signUp({
+  const { error } = await supabase.auth.signUp({
     email,
     password,
   });
 
   if (error) {
-    alert(error.message);
-    return;
+    return { ok: false, error: error.message || "Ошибка регистрации." };
   }
-
-  alert("Регистрация успешна!");
-  // Main UI subscribes to auth state changes and loads tasks automatically.
+  return { ok: true };
 }
 
 async function login() {
   const supabase = window.supabaseClient;
   if (!supabase) {
     console.error("Supabase client missing.");
-    return;
+    return { ok: false, error: "Клиент авторизации не инициализирован." };
   }
 
   const email = document.getElementById("email").value;
   const password = document.getElementById("password").value;
 
-  const { data, error } = await supabase.auth.signInWithPassword({
+  const { error } = await supabase.auth.signInWithPassword({
     email,
     password,
   });
 
   if (error) {
-    alert(error.message);
-    return;
+    return { ok: false, error: error.message || "Ошибка входа." };
   }
-
-  alert("Вход выполнен!");
-  // Main UI subscribes to auth state changes and loads tasks automatically.
+  return { ok: true };
 }
 
 async function logout() {
   const supabase = window.supabaseClient;
   if (!supabase) {
     console.error("Supabase client missing.");
-    return;
+    return { ok: false, error: "Клиент авторизации не инициализирован." };
   }
 
   const { error } = await supabase.auth.signOut();
-  if (error) console.error("Sign out failed:", error);
+  if (error) {
+    console.error("Sign out failed:", error);
+    return { ok: false, error: "Не удалось выйти из аккаунта." };
+  }
+  return { ok: true };
 }
 
 window.addEventListener("load", () => {
@@ -1759,6 +1753,34 @@ window.addEventListener("load", () => {
   const loginBtn = document.getElementById("auth-login");
   const logoutBtn = document.getElementById("logout-button");
   const authStatusEl = document.getElementById("auth-status");
+  const authMessageEl = document.getElementById("auth-message");
+
+  function setAuthMessage(text, isError = false) {
+    if (!authMessageEl) return;
+    authMessageEl.textContent = text || "";
+    authMessageEl.style.color = isError ? "#a62720" : "inherit";
+    authMessageEl.style.opacity = text ? "1" : "0.85";
+  }
+
+  function setAuthPending(isPending) {
+    if (signupBtn) signupBtn.disabled = isPending;
+    if (loginBtn) loginBtn.disabled = isPending;
+    if (logoutBtn) logoutBtn.disabled = isPending;
+  }
+
+  async function runAuthAction(pendingText, actionFn, successText) {
+    setAuthPending(true);
+    setAuthMessage(pendingText);
+    const res = await actionFn();
+    setAuthPending(false);
+    if (!res?.ok) {
+      setAuthMessage(res?.error || "Ошибка операции.", true);
+      return false;
+    }
+    setAuthMessage(successText);
+    closeAuthPopup();
+    return true;
+  }
 
   async function refreshAuthStatus() {
     if (!authStatusEl) return;
@@ -1788,6 +1810,7 @@ window.addEventListener("load", () => {
   function openAuthPopup() {
     if (!overlay) return;
     overlay.hidden = false;
+    setAuthMessage("");
     void refreshAuthStatus();
   }
 
@@ -1807,22 +1830,23 @@ window.addEventListener("load", () => {
 
   if (signupBtn) {
     signupBtn.addEventListener("click", async () => {
-      await signUp();
-      closeAuthPopup();
+      await runAuthAction(
+        "Выполняется регистрация...",
+        signUp,
+        "Регистрация успешна. Проверьте почту для подтверждения."
+      );
     });
   }
 
   if (loginBtn) {
     loginBtn.addEventListener("click", async () => {
-      await login();
-      closeAuthPopup();
+      await runAuthAction("Выполняется вход...", login, "Вход выполнен.");
     });
   }
 
   if (logoutBtn) {
     logoutBtn.addEventListener("click", async () => {
-      await logout();
-      closeAuthPopup();
+      await runAuthAction("Выполняется выход...", logout, "Вы вышли из аккаунта.");
     });
   }
 });
