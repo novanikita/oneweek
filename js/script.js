@@ -68,18 +68,67 @@ function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist
       if (pendingPersist.get(key) === next) {
         pendingPersist.delete(key);
       }
+      if (task) task._dirty = false;
     }
   };
 }
 
-function registerDraftFlush(flushFn) {
+/** Mark in-memory task as needing a DB write (used with global flush). */
+function markTaskDirty(task) {
+  if (task) task._dirty = true;
+}
+
+const taskSaveFlushes = [];
+
+function registerTaskSaveFlush(flushFn) {
+  taskSaveFlushes.push(flushFn);
+}
+
+/** Flush every registered block (focused field + dirty tasks). */
+async function flushAllTaskSaves() {
+  await Promise.all(taskSaveFlushes.map((fn) => fn()));
+}
+
+if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "hidden") return;
-    void flushFn();
+    void flushAllTaskSaves();
   });
   window.addEventListener("pagehide", () => {
-    void flushFn();
+    void flushAllTaskSaves();
   });
+}
+
+if (typeof window !== "undefined") {
+  window.__flushAllTaskSaves = flushAllTaskSaves;
+}
+
+/** Full cross-panel payload on dataTransfer (global store can be cleared in dragend before drop in some browsers). */
+const ONEWEEK_DRAG_PAYLOAD_MIME = "application/x-oneweek-task-payload";
+
+function readDragPayloadFromEvent(e) {
+  const g =
+    typeof window !== "undefined" && window.__dragTaskPayload != null
+      ? window.__dragTaskPayload
+      : null;
+  if (g && typeof g === "object" && typeof g.sourceBlock === "string") return g;
+  try {
+    const raw = e?.dataTransfer?.getData?.(ONEWEEK_DRAG_PAYLOAD_MIME);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeDragPayloadToDataTransfer(dataTransfer, payload) {
+  if (!dataTransfer || !payload) return;
+  try {
+    dataTransfer.setData(ONEWEEK_DRAG_PAYLOAD_MIME, JSON.stringify(payload));
+  } catch (err) {
+    console.warn("oneweek: could not store drag payload on dataTransfer", err);
+  }
 }
 
 function normalizeSubtaskFlags(tasks) {
@@ -106,14 +155,6 @@ function isTabNavigationKey(e) {
   return e.key === "Tab" || e.code === "Tab" || e.keyCode === 9;
 }
 
-/** Index of nearest main task (non-subtask) strictly above `idx`. */
-function findNearestMainAbove(tasks, idx) {
-  for (let j = idx - 1; j >= 0; j--) {
-    if (!tasks[j].subtask) return j;
-  }
-  return -1;
-}
-
 /** First index after the run of subtasks that follow `mainIdx` (end of that subtree in flat list). */
 function indexAfterSubtreeOfMain(tasks, mainIdx) {
   let pos = mainIdx + 1;
@@ -122,14 +163,24 @@ function indexAfterSubtreeOfMain(tasks, mainIdx) {
 }
 
 /**
- * Puts a subtask row directly under its parent main task: after that main and any
- * subtasks already following it (last child under the same parent).
+ * Where to place `fromIdx` so it becomes a sub-item of the row directly above it
+ * (`fromIdx - 1`): under that main’s subtree, or after that subtask’s sibling run.
  */
-function moveSubtaskUnderParent(tasks, fromIdx) {
+function insertIndexUnderImmediateRowAbove(tasks, fromIdx) {
   if (fromIdx <= 0) return fromIdx;
-  const parentIdx = findNearestMainAbove(tasks, fromIdx);
-  if (parentIdx === -1) return fromIdx;
-  const insertAt = indexAfterSubtreeOfMain(tasks, parentIdx);
+  const aboveIdx = fromIdx - 1;
+  if (!tasks[aboveIdx].subtask) {
+    return indexAfterSubtreeOfMain(tasks, aboveIdx);
+  }
+  let k = aboveIdx + 1;
+  while (k < tasks.length && tasks[k].subtask) k += 1;
+  return k;
+}
+
+/** Moves row at `fromIdx` to the slot where it is nested under the line immediately above. */
+function moveSubtaskUnderImmediateRowAbove(tasks, fromIdx) {
+  if (fromIdx <= 0) return fromIdx;
+  const insertAt = insertIndexUnderImmediateRowAbove(tasks, fromIdx);
   if (fromIdx === insertAt) return fromIdx;
   const [row] = tasks.splice(fromIdx, 1);
   const adjustedInsert = fromIdx < insertAt ? insertAt - 1 : insertAt;
@@ -197,7 +248,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
   function createTask(text = "", checked = false, dbId = null, subtask = false) {
     const id = `task-${state.nextId++}`;
-    return { id, dbId, text, checked, subtask: !!subtask };
+    return { id, dbId, text, checked, subtask: !!subtask, _dirty: false };
   }
 
   function buildDragPayload(task) {
@@ -286,7 +337,14 @@ function toggleAndRepositionTask(tasks, idx) {
     if (dbId) {
       const { error } = await supabase
         .from("tasks")
-        .update({ content, completed, is_subtask: isSubtask })
+        .update({
+          content,
+          completed,
+          is_subtask: isSubtask,
+          type: "general",
+          day_name: null,
+          date: getVisibleWeekMondayIso(),
+        })
         .eq("id", dbId)
         .eq("user_id", authUserId);
 
@@ -529,10 +587,15 @@ function toggleAndRepositionTask(tasks, idx) {
             task.subtask = false;
           } else if (canIndentAsSubtask(state.tasks, idx)) {
             task.subtask = true;
-            moveSubtaskUnderParent(state.tasks, idx);
+            moveSubtaskUnderImmediateRowAbove(state.tasks, idx);
           }
           normalizeSubtaskFlags(state.tasks);
-          if (!isTaskEmptyText(task.text)) void persistTask(task);
+          if (!isTaskEmptyText(task.text)) {
+            markTaskDirty(task);
+            void (async () => {
+              await persistTask(task);
+            })();
+          }
           state.focusAfterRender = {
             id: task.id,
             start: e.target.selectionStart,
@@ -545,11 +608,19 @@ function toggleAndRepositionTask(tasks, idx) {
 
       row.addEventListener("dragstart", (e) => {
         if (!isAuthed) return;
+        const input = row.querySelector(".task-text");
+        if (input) {
+          task.text = input.value;
+          markTaskDirty(task);
+          normalizeSubtaskFlags(state.tasks);
+        }
         state.isDragging = true;
         state.draggedId = taskId;
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", taskId);
-        setGlobalDragPayload(buildDragPayload(task));
+        const dragPl = buildDragPayload(task);
+        setGlobalDragPayload(dragPl);
+        writeDragPayloadToDataTransfer(e.dataTransfer, dragPl);
       });
 
       row.addEventListener("dragover", (e) => {
@@ -575,7 +646,12 @@ function toggleAndRepositionTask(tasks, idx) {
         state.tasks.splice(adjustedTo, 0, moved);
 
         normalizeSubtaskFlags(state.tasks);
-        if (moved.dbId && !isTaskEmptyText(moved.text)) void persistTask(moved);
+        if (moved.dbId && !isTaskEmptyText(moved.text)) {
+          markTaskDirty(moved);
+          void (async () => {
+            await persistTask(moved);
+          })();
+        }
 
         state.focusAfterRender = { id: moved.id };
         render();
@@ -616,21 +692,22 @@ function toggleAndRepositionTask(tasks, idx) {
     }
   }
 
-  function focusLastTask() {
+  /** Click on empty list area: reuse empty draft row or insert a new one, then focus. */
+  function beginNewGeneralTaskFromEmptyClick() {
+    void flushAllTaskSaves();
     ensureAtLeastOneTask();
-    let lastUnchecked = -1;
     for (let i = state.tasks.length - 1; i >= 0; i--) {
-      if (!state.tasks[i].checked) {
-        lastUnchecked = i;
-        break;
+      const t = state.tasks[i];
+      if (!t.checked && isTaskEmptyText(t.text)) {
+        state.focusAfterRender = { id: t.id };
+        render();
+        return;
       }
     }
-    if (lastUnchecked !== -1) {
-      requestAnimationFrame(() => focusTask(state.tasks[lastUnchecked].id));
-      return;
-    }
-    const newTask = createTask("", false, null);
-    state.tasks.splice(0, 0, newTask);
+    const fc = firstCheckedTaskIndex(state.tasks);
+    const insertAt = fc === -1 ? state.tasks.length : fc;
+    const newTask = createTask("", false, null, false);
+    state.tasks.splice(insertAt, 0, newTask);
     state.focusAfterRender = { id: newTask.id };
     render();
   }
@@ -647,7 +724,12 @@ function toggleAndRepositionTask(tasks, idx) {
     };
 
     // Persist completion state for non-empty tasks.
-    if (!isTaskEmptyText(task.text)) void persistTask(task);
+    if (!isTaskEmptyText(task.text)) {
+      markTaskDirty(task);
+      void (async () => {
+        await persistTask(task);
+      })();
+    }
     render();
   }
 
@@ -669,10 +751,13 @@ function toggleAndRepositionTask(tasks, idx) {
     const lines = text.split(/\r?\n/);
     const first = lines[0] ?? "";
     state.tasks[idx].text = first;
+    markTaskDirty(state.tasks[idx]);
 
     const toInsert = [];
     for (let i = 1; i < lines.length; i++) {
-      toInsert.push(createTask(lines[i] ?? "", false, null, false));
+      const nt = createTask(lines[i] ?? "", false, null, false);
+      markTaskDirty(nt);
+      toInsert.push(nt);
     }
     const pasteInsertAt = insertIndexBelowRowUncheckedFirst(state.tasks, idx);
     state.tasks.splice(pasteInsertAt, 0, ...toInsert);
@@ -689,7 +774,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     const row = e.target.closest(".task-row");
     if (!row) {
-      focusLastTask();
+      beginNewGeneralTaskFromEmptyClick();
       return;
     }
 
@@ -729,6 +814,7 @@ function toggleAndRepositionTask(tasks, idx) {
     const idx = getTaskIndex(id);
     if (idx === -1) return;
     state.tasks[idx].text = input.value;
+    markTaskDirty(state.tasks[idx]);
     autoSizeTextarea(input);
   });
 
@@ -766,7 +852,22 @@ function toggleAndRepositionTask(tasks, idx) {
     await syncTaskFromInput(id);
   }
 
-  registerDraftFlush(flushFocusedGeneralInput);
+  async function flushDirtyGeneralTasks() {
+    if (!isAuthed || !authUserId) return;
+    for (const t of state.tasks) {
+      if (!t._dirty) continue;
+      if (isTaskEmptyText(t.text) && !t.dbId) {
+        t._dirty = false;
+        continue;
+      }
+      await persistTask(t);
+    }
+  }
+
+  registerTaskSaveFlush(async () => {
+    await flushFocusedGeneralInput();
+    await flushDirtyGeneralTasks();
+  });
 
   tasksField.addEventListener("paste", (e) => {
     if (!isAuthed) return;
@@ -791,13 +892,16 @@ function toggleAndRepositionTask(tasks, idx) {
     e.dataTransfer.dropEffect = "move";
   });
 
-  tasksField.addEventListener("drop", async (e) => {
-    e.preventDefault();
+  tasksField.addEventListener(
+    "drop",
+    async (e) => {
     if (!isAuthed) return;
 
-    const payload = getGlobalDragPayload();
-    if (!payload) return;
-    if (payload.sourceBlock === GENERAL_BLOCK_ID) return;
+    const payload = readDragPayloadFromEvent(e);
+    if (!payload || payload.sourceBlock === GENERAL_BLOCK_ID) return;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
 
     const moved = createTask(
       payload.text,
@@ -827,8 +931,13 @@ function toggleAndRepositionTask(tasks, idx) {
         .eq("id", moved.dbId)
         .eq("user_id", authUserId);
       if (error) console.error("Supabase move-to-general failed:", error);
+      else if (!isTaskEmptyText(moved.text)) {
+        markTaskDirty(moved);
+        await persistTask(moved);
+      }
     } else if (!isTaskEmptyText(moved.text)) {
-      void persistTask(moved);
+      markTaskDirty(moved);
+      await persistTask(moved);
     }
 
     window.dispatchEvent(
@@ -842,7 +951,10 @@ function toggleAndRepositionTask(tasks, idx) {
     );
 
     clearGlobalDragPayload();
-  });
+    void flushAllTaskSaves();
+    },
+    true
+  );
 
   window.addEventListener("task-cross-move", (e) => {
     const detail = e.detail || {};
@@ -947,7 +1059,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     function createTask(text = "", checked = false, dbId = null, subtask = false) {
       const id = `day-task-${state.nextId++}`;
-      return { id, dbId, text, checked, subtask: !!subtask };
+      return { id, dbId, text, checked, subtask: !!subtask, _dirty: false };
     }
 
     function buildDragPayload(task) {
@@ -1259,10 +1371,15 @@ function toggleAndRepositionTask(tasks, idx) {
               task.subtask = false;
             } else if (canIndentAsSubtask(state.tasks, idx)) {
               task.subtask = true;
-              moveSubtaskUnderParent(state.tasks, idx);
+              moveSubtaskUnderImmediateRowAbove(state.tasks, idx);
             }
             normalizeSubtaskFlags(state.tasks);
-            if (!isTaskEmptyText(task.text)) void persistTask(task);
+            if (!isTaskEmptyText(task.text)) {
+              markTaskDirty(task);
+              void (async () => {
+                await persistTask(task);
+              })();
+            }
             state.focusAfterRender = {
               id: task.id,
               start: e.target.selectionStart,
@@ -1275,11 +1392,24 @@ function toggleAndRepositionTask(tasks, idx) {
 
         row.addEventListener("dragstart", (e) => {
           if (!isAuthed) return;
+          const input = row.querySelector(".task-text");
+          if (input) {
+            let v = moveTimeToStart(input.value);
+            if (v !== input.value) input.value = v;
+            task.text = v;
+            markTaskDirty(task);
+          }
+          normalizeSubtaskFlags(state.tasks);
+          stabilizeTimeSorted();
+          const payloadTask =
+            state.tasks.find((t) => t.id === taskId) || task;
           state.isDragging = true;
           state.draggedId = taskId;
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", taskId);
-          setGlobalDragPayload(buildDragPayload(task));
+          const dragPl = buildDragPayload(payloadTask);
+          setGlobalDragPayload(dragPl);
+          writeDragPayloadToDataTransfer(e.dataTransfer, dragPl);
         });
 
         row.addEventListener("dragover", (e) => {
@@ -1306,7 +1436,12 @@ function toggleAndRepositionTask(tasks, idx) {
 
           stabilizeTimeSorted();
           normalizeSubtaskFlags(state.tasks);
-          if (moved.dbId && !isTaskEmptyText(moved.text)) void persistTask(moved);
+          if (moved.dbId && !isTaskEmptyText(moved.text)) {
+            markTaskDirty(moved);
+            void (async () => {
+              await persistTask(moved);
+            })();
+          }
 
           state.focusAfterRender = { id: moved.id };
           render();
@@ -1367,6 +1502,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     /** Click on empty list area: reuse empty draft row or insert a new one, then focus. */
     function beginNewPlanFromEmptyClick() {
+      void flushAllTaskSaves();
       ensureAtLeastOneTask();
       for (let i = state.tasks.length - 1; i >= 0; i--) {
         const t = state.tasks[i];
@@ -1388,7 +1524,12 @@ function toggleAndRepositionTask(tasks, idx) {
       const idx = getTaskIndex(id);
       if (idx === -1) return;
       const task = toggleAndRepositionTask(state.tasks, idx);
-      if (!isTaskEmptyText(task.text)) void persistTask(task);
+      if (!isTaskEmptyText(task.text)) {
+        markTaskDirty(task);
+        void (async () => {
+          await persistTask(task);
+        })();
+      }
       render();
     }
 
@@ -1407,6 +1548,7 @@ function toggleAndRepositionTask(tasks, idx) {
       if (idx === -1) return;
       // Keep typing path identical to normal tasks: plain text only.
       state.tasks[idx].text = text;
+      markTaskDirty(state.tasks[idx]);
     }
 
     dayRect.addEventListener("click", (e) => {
@@ -1496,7 +1638,22 @@ function toggleAndRepositionTask(tasks, idx) {
       await syncTaskFromInput(id);
     }
 
-    registerDraftFlush(flushFocusedDayInput);
+    async function flushDirtyDayTasks() {
+      if (!isAuthed || !currentUserId) return;
+      for (const t of state.tasks) {
+        if (!t._dirty) continue;
+        if (isTaskEmptyText(t.text) && !t.dbId) {
+          t._dirty = false;
+          continue;
+        }
+        await persistTask(t);
+      }
+    }
+
+    registerTaskSaveFlush(async () => {
+      await flushFocusedDayInput();
+      await flushDirtyDayTasks();
+    });
 
     tasksEl.addEventListener("dragover", (e) => {
       if (!isAuthed) return;
@@ -1504,13 +1661,16 @@ function toggleAndRepositionTask(tasks, idx) {
       e.dataTransfer.dropEffect = "move";
     });
 
-    tasksEl.addEventListener("drop", async (e) => {
-      e.preventDefault();
+    tasksEl.addEventListener(
+      "drop",
+      async (e) => {
       if (!isAuthed) return;
 
-      const payload = getGlobalDragPayload();
-      if (!payload) return;
-      if (payload.sourceBlock === blockId) return;
+      const payload = readDragPayloadFromEvent(e);
+      if (!payload || payload.sourceBlock === blockId) return;
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
 
       const moved = createTask(
         moveTimeToStart(payload.text),
@@ -1542,8 +1702,13 @@ function toggleAndRepositionTask(tasks, idx) {
           .eq("id", moved.dbId)
           .eq("user_id", currentUserId);
         if (error) console.error("Supabase move-to-day failed:", error);
+        else if (!isTaskEmptyText(moved.text)) {
+          markTaskDirty(moved);
+          await persistTask(moved);
+        }
       } else if (!isTaskEmptyText(moved.text)) {
-        void persistTask(moved);
+        markTaskDirty(moved);
+        await persistTask(moved);
       }
 
       window.dispatchEvent(
@@ -1557,7 +1722,10 @@ function toggleAndRepositionTask(tasks, idx) {
       );
 
       clearGlobalDragPayload();
-    });
+      void flushAllTaskSaves();
+    },
+    true
+    );
 
     async function setAuthUser(userId) {
       isAuthed = !!userId;
@@ -1673,10 +1841,15 @@ function toggleAndRepositionTask(tasks, idx) {
   }
 
   function shiftWeek(delta) {
-    window.__weekOffset = Number(window.__weekOffset || 0) + delta;
-    syncWeekAwayClass();
-    updateDayOfMonthLabels();
-    window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
+    void (async () => {
+      if (typeof window.__flushAllTaskSaves === "function") {
+        await window.__flushAllTaskSaves();
+      }
+      window.__weekOffset = Number(window.__weekOffset || 0) + delta;
+      syncWeekAwayClass();
+      updateDayOfMonthLabels();
+      window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
+    })();
   }
 
   const prevBtn = document.getElementById("week-prev");
