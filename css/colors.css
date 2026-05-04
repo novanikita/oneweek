@@ -1,0 +1,8 @@
+:root {
+  --color-text: #000;
+  --color-background: #fff;
+  /* Outer shell of week + tasks (see styles: wide vs narrow). */
+  --radius-shell: 0.65rem;
+  /* Soft outer glow on day cells + tasks field (hover). */
+  --shadow-day-hover: 0 0 0.3em 0.07em color-mix(in srgb, var(--color-text) 22%, transparent);
+}

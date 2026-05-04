@@ -1,5 +1,19 @@
+@font-face {
+  font-family: "Proto Grotesk";
+  src: url("../fonts/ProtoGrotesk.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   font-size: 1em;
+  font-family: "Proto Grotesk", system-ui, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 * {
@@ -8,32 +22,34 @@
 
 body {
   margin: 0;
-  font-family: sans-serif;
-  color: #A62720;
-  background: rgb(255, 212, 226);
+  font-family: inherit;
+  color: var(--color-text);
+  background: var(--color-background);
+  overflow: hidden;
 }
 
 body.week-offset-away {
-  background: #fff;
+  background: var(--color-background);
 }
 
 body.week-offset-away .rectangle {
-  background: #fff;
+  background: var(--color-background);
 }
 
 body.week-offset-away .task-checkbox {
-  background: #fff;
+  background: var(--color-background);
 }
 
 body.week-offset-away .task-commit,
 body.week-offset-away .task-delete {
-  background: #fff;
+  background: var(--color-background);
 }
 
 .layout {
   display: grid;
   grid-template-columns: 2fr 1fr;
-  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100dvh;
 }
 
 .panel {
@@ -42,6 +58,15 @@ body.week-offset-away .task-delete {
   gap: 1em;
   padding: 1em;
   min-width: 0;
+}
+
+/* No gutter between week column and tasks column (or stacked panels on narrow view). */
+.panel.week-panel {
+  padding-right: 0;
+}
+
+.panel.tasks-panel {
+  padding-left: 0;
 }
 
 h1 {
@@ -54,10 +79,20 @@ h1 {
   display: flex;
   align-items: center;
   gap: 0.5em;
+  background: var(--color-background);
 }
 
 .panel-titlebar-right {
   justify-content: space-between;
+}
+
+.week-panel-titlebar #auth-trigger-mobile {
+  margin-left: auto;
+}
+
+/* Mobile-only duplicate; desktop uses #auth-trigger in tasks panel. */
+#auth-trigger-mobile {
+  display: none;
 }
 
 .panel-title {
@@ -127,11 +162,43 @@ h1 {
   line-height: 1.3;
 }
 
+.modal-theme {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  margin-top: 0.25em;
+  padding-top: 0.5em;
+  border-top: 0.05em solid var(--color-text);
+}
+
+.modal-theme-title {
+  margin: 0;
+  font: inherit;
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+.modal-theme-hint {
+  margin: 0 0 0.15em;
+  font-size: 0.8em;
+  line-height: 1.25;
+  opacity: 0.85;
+}
+
+.modal-theme-label {
+  font-size: 0.85em;
+  opacity: 0.9;
+}
+
+.modal-theme-actions {
+  margin-top: 0.2em;
+}
+
 .modal input {
   font: inherit;
   color: inherit;
   background: transparent;
-  border: 0.05em solid #A62720;
+  border: 0.05em solid var(--color-text);
   padding: 0.25em 0.5em;
 }
 
@@ -145,7 +212,7 @@ h1 {
   font: inherit;
   color: inherit;
   background: transparent;
-  border: 0.05em solid #A62720;
+  border: 0.05em solid var(--color-text);
   padding: 0.25em 0.5em;
   cursor: pointer;
 }
@@ -159,50 +226,157 @@ h1 {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   grid-template-rows: repeat(2, 1fr);
-  gap: 0.75em;
+  gap: 0;
   flex: 1;
   min-height: 0;
+  border: 0.05em solid var(--color-text);
 }
 
 .rectangle {
-  background: rgb(255, 212, 226);
-  border: 0.05em solid #A62720;
+  background: var(--color-background);
+  border: 0.05em solid var(--color-text);
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 4em;
 }
 
+/* Single hairline grid inside the week: no doubled borders between day cells. */
+.week-grid > .rectangle {
+  border: 0;
+  border-right: 0.05em solid var(--color-text);
+  border-bottom: 0.05em solid var(--color-text);
+}
+
+/* Wide: one line week|tasks; outer shell radii; 4×2 cell borders (last col / last row). */
+@media (min-width: 901px) {
+  .week-grid > .rectangle:nth-child(4n) {
+    border-right-width: 0;
+  }
+
+  .week-grid > .rectangle:nth-child(n + 5) {
+    border-bottom-width: 0;
+  }
+
+  .week-grid {
+    border-right-width: 0;
+    border-top-left-radius: var(--radius-shell);
+    border-bottom-left-radius: var(--radius-shell);
+    overflow: hidden;
+  }
+
+  .tasks-field {
+    border-top-right-radius: var(--radius-shell);
+    border-bottom-right-radius: var(--radius-shell);
+  }
+
+  .tasks-field-label {
+    display: none;
+  }
+}
+
 .tasks-field {
   flex: 1;
   min-height: 0;
-  display: block; /* override .rectangle flex-centering for tasks list */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+.tasks-field-root {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   cursor: text;
 }
 
+/* Hover glow: instant on enter (0s on :hover), fades out over 0.5s when pointer leaves. */
+.day-rect,
+.tasks-field {
+  box-shadow: none;
+  transition: box-shadow 0.5s ease;
+}
+
+.day-rect:hover,
+.tasks-field:hover {
+  position: relative;
+  z-index: 2;
+  box-shadow: var(--shadow-day-hover);
+  transition: box-shadow 0s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .day-rect,
+  .tasks-field,
+  .day-rect:hover,
+  .tasks-field:hover {
+    transition: none;
+  }
+}
+
 @media (max-width: 900px) {
+  #auth-trigger {
+    display: none;
+  }
+
+  #auth-trigger-mobile {
+    display: block;
+  }
+
   body {
-    font-size: clamp(14px, 3.5vw, 16px);
+    font-size: clamp(12px, 3.15vw, 14px);
   }
 
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: clamp(22rem, 58dvh, 34rem) minmax(0, 1fr);
+    /* Taller first row than 4×2 desktop: four day-rows need vertical space. */
+    grid-template-rows: clamp(26rem, 62dvh, 40rem) minmax(0, 1fr);
     min-height: 100dvh;
+    row-gap: 0;
   }
 
   .panel {
     min-height: 0;
-    padding: 0.75em;
     gap: 0.75em;
+  }
+
+  /* Symmetric horizontal inset; seam week|tasks has no double vertical padding. */
+  .panel.week-panel {
+    padding: 0.75em 0.75em 0;
+  }
+
+  .panel.tasks-panel {
+    padding: 0 0.75em 0.75em;
+    flex: 1;
+    min-height: 0;
+    gap: 0;
+  }
+
+  /* Title + auth live in week header on mobile; label is inside tasks-field. */
+  .tasks-panel-titlerow-desktop {
+    display: none;
+  }
+
+  .week-grid > .rectangle:nth-child(2n) {
+    border-right-width: 0;
+  }
+
+  .week-grid > .rectangle:nth-child(n + 7) {
+    border-bottom-width: 0;
   }
 
   .panel-titlebar {
     position: sticky;
     top: 0;
     z-index: 5;
-    background: inherit;
+    background: var(--color-background);
+  }
+
+  /* Stacked shell: rounded top of week header; week grid square bottom at tasks seam; tasks rounded bottom. */
+  .week-panel > .panel-titlebar {
+    border-radius: var(--radius-shell) var(--radius-shell) 0 0;
   }
 
   .week-panel {
@@ -210,17 +384,26 @@ h1 {
     min-height: 0;
   }
 
+  /* 2 cols × 4 rows: Mon–Tue, Wed–Thu, Fri–Sat, Sun–Next (DOM order unchanged). */
   .week-grid {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(4, minmax(0, 1fr));
+    border-top-left-radius: var(--radius-shell);
+    border-top-right-radius: var(--radius-shell);
     overflow: auto;
   }
 
-  .tasks-panel {
-    min-height: 0;
+  .week-grid > .rectangle {
+    min-height: 5.75rem;
   }
 
   .tasks-field {
     min-height: 0;
     height: 100%;
+    /* Seam line is week-grid bottom border; no second line on tasks. */
+    border-top-width: 0;
+    border-bottom-left-radius: var(--radius-shell);
+    border-bottom-right-radius: var(--radius-shell);
   }
 
   body {
@@ -245,7 +428,7 @@ h1 {
 }
 
 .task-row:has(.task-text:focus) {
-  border-color: #a62720;
+  border-color: var(--color-text);
 }
 
 .task-row.task-row-sub {
@@ -256,8 +439,8 @@ h1 {
   flex: 0 0 auto;
   width: 1.2em;
   height: 1.2em;
-  border: 0.05em solid #A62720;
-  background: rgb(255, 212, 226);
+  border: 0.05em solid var(--color-text);
+  background: var(--color-background);
   padding: 0;
   display: flex;
   align-items: center;
@@ -273,22 +456,22 @@ h1 {
 }
 
 .task-checkbox.checked {
-  background: #A62720;
+  background: var(--color-text);
 }
 
 .task-checkbox.checked::after {
   content: "✓";
-  color: #fff;
+  color: var(--color-background);
 }
 
 .task-commit {
   flex: 0 0 auto;
   font: inherit;
-  color: #a62720;
+  color: var(--color-text);
   width: 1.4em;
   height: 1.4em;
   padding: 0;
-  border: 0.05em solid #a62720;
+  border: 0.05em solid var(--color-text);
   background: transparent;
   display: flex;
   align-items: center;
@@ -312,11 +495,11 @@ h1 {
 .task-delete {
   flex: 0 0 auto;
   font: inherit;
-  color: #a62720;
+  color: var(--color-text);
   width: 1.4em;
   height: 1.4em;
   padding: 0;
-  border: 0.05em solid #a62720;
+  border: 0.05em solid var(--color-text);
   background: transparent;
   display: flex;
   align-items: center;
@@ -347,7 +530,7 @@ h1 {
   outline: none;
   background: transparent;
   padding: 0;
-  color: #A62720;
+  color: var(--color-text);
   width: 100%;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -367,7 +550,7 @@ h1 {
 
 .task-row.completed .task-text {
   text-decoration: line-through;
-  color: #A62720;
+  color: var(--color-text);
 }
 
 .day-rect {
@@ -399,7 +582,7 @@ h1 {
   display: grid;
   grid-template-columns: auto 1fr;
   grid-template-rows: auto;
-  align-items: start;
+  align-items: center;
   column-gap: 0.5em;
 }
 

@@ -3,9 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>One Week</title>
+    <title>oneweek</title>
+    <link rel="stylesheet" href="./css/colors.css" />
     <link rel="stylesheet" href="./css/styles.css" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
+    <script src="./js/theme-init.js"></script>
   </head>
   <body>
     <script>
@@ -17,22 +19,30 @@
 
     <main class="layout">
       <section class="panel week-panel" aria-label="Week">
-        <div class="panel-titlebar">
-          <h1 class="panel-title">week</h1>
+        <div class="panel-titlebar week-panel-titlebar">
+          <h1 class="panel-title">oneweek</h1>
           <button class="icon-button" type="button" id="week-prev" aria-label="Previous week">
             ←
           </button>
           <button class="icon-button" type="button" id="week-next" aria-label="Next week">
             →
           </button>
+          <button
+            class="icon-button"
+            type="button"
+            id="auth-trigger-mobile"
+            aria-label="User"
+          >
+            👤
+          </button>
         </div>
         <div class="week-grid">
           <div class="rectangle day-rect" data-day="Monday">
-            <div class="day-label">Monday</div>
+            <div class="day-label">monday</div>
             <div class="day-tasks" id="day-Monday" aria-label="Monday tasks"></div>
           </div>
           <div class="rectangle day-rect" data-day="Tuesday">
-            <div class="day-label">Tuesday</div>
+            <div class="day-label">tuesday</div>
             <div
               class="day-tasks"
               id="day-Tuesday"
@@ -40,7 +50,7 @@
             ></div>
           </div>
           <div class="rectangle day-rect" data-day="Wednesday">
-            <div class="day-label">Wednesday</div>
+            <div class="day-label">wednesday</div>
             <div
               class="day-tasks"
               id="day-Wednesday"
@@ -48,7 +58,7 @@
             ></div>
           </div>
           <div class="rectangle day-rect" data-day="Thursday">
-            <div class="day-label">Thursday</div>
+            <div class="day-label">thursday</div>
             <div
               class="day-tasks"
               id="day-Thursday"
@@ -56,11 +66,11 @@
             ></div>
           </div>
           <div class="rectangle day-rect" data-day="Friday">
-            <div class="day-label">Friday</div>
+            <div class="day-label">friday</div>
             <div class="day-tasks" id="day-Friday" aria-label="Friday tasks"></div>
           </div>
           <div class="rectangle day-rect" data-day="Saturday">
-            <div class="day-label">Saturday</div>
+            <div class="day-label">saturday</div>
             <div
               class="day-tasks"
               id="day-Saturday"
@@ -68,11 +78,11 @@
             ></div>
           </div>
           <div class="rectangle day-rect" data-day="Sunday">
-            <div class="day-label">Sunday</div>
+            <div class="day-label">sunday</div>
             <div class="day-tasks" id="day-Sunday" aria-label="Sunday tasks"></div>
           </div>
           <div class="rectangle day-rect" data-day="Next week">
-            <div class="day-label">Next week</div>
+            <div class="day-label">next week</div>
             <div
               class="day-tasks"
               id="day-Next-week"
@@ -83,17 +93,16 @@
       </section>
 
       <section class="panel tasks-panel" aria-label="Tasks">
-        <div class="panel-titlebar panel-titlebar-right">
+        <div class="panel-titlebar panel-titlebar-right tasks-panel-titlerow-desktop">
           <h1 class="panel-title">tasks</h1>
           <button class="icon-button" type="button" id="auth-trigger" aria-label="User">
             👤
           </button>
         </div>
-        <div
-          class="rectangle tasks-field"
-          id="tasks-field"
-          aria-label="Tasks area"
-        ></div>
+        <div class="rectangle tasks-field" id="tasks-field" aria-label="Tasks area">
+          <div class="day-label tasks-field-label">tasks</div>
+          <div id="tasks-field-root" class="tasks-field-root"></div>
+        </div>
       </section>
     </main>
 
@@ -104,6 +113,34 @@
         </button>
         <p id="auth-status" class="auth-status" aria-live="polite"></p>
         <p id="auth-message" class="auth-message" aria-live="polite"></p>
+        <div class="modal-theme" aria-labelledby="theme-colors-title">
+          <p id="theme-colors-title" class="modal-theme-title">Цвета интерфейса</p>
+          <p class="modal-theme-hint">Формат: #RRGGBB или #RGB</p>
+          <label class="modal-theme-label" for="theme-color-text">Текст</label>
+          <input
+            id="theme-color-text"
+            class="modal-theme-input"
+            type="text"
+            inputmode="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="#000000"
+          />
+          <label class="modal-theme-label" for="theme-color-background">Фон</label>
+          <input
+            id="theme-color-background"
+            class="modal-theme-input"
+            type="text"
+            inputmode="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="#ffffff"
+          />
+          <div class="modal-actions modal-theme-actions">
+            <button type="button" id="theme-apply">Применить цвета</button>
+            <button type="button" id="theme-reset">Сбросить</button>
+          </div>
+        </div>
         <input id="email" placeholder="Email" />
         <input id="password" type="password" placeholder="Password" />
         <div class="modal-actions">
