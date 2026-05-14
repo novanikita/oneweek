@@ -18,24 +18,24 @@
     </script>
 
     <main class="layout">
+      <header class="panel-titlebar layout-header">
+        <button
+          class="icon-button"
+          type="button"
+          id="auth-trigger-mobile"
+          aria-label="User"
+        >
+          👤
+        </button>
+        <h1 class="panel-title">oneweek by <a href="https://nikitanova.com/en/index.html" class="panel-title-link" target="_blank" rel="noopener">nova</a></h1>
+        <button class="icon-button" type="button" id="week-prev" aria-label="Previous week" hidden>
+          ←
+        </button>
+        <button class="icon-button" type="button" id="week-next" aria-label="Next week" hidden>
+          →
+        </button>
+      </header>
       <section class="panel week-panel" aria-label="Week">
-        <div class="panel-titlebar week-panel-titlebar">
-          <h1 class="panel-title">oneweek</h1>
-          <button class="icon-button" type="button" id="week-prev" aria-label="Previous week">
-            ←
-          </button>
-          <button class="icon-button" type="button" id="week-next" aria-label="Next week">
-            →
-          </button>
-          <button
-            class="icon-button"
-            type="button"
-            id="auth-trigger-mobile"
-            aria-label="User"
-          >
-            👤
-          </button>
-        </div>
         <div class="week-grid">
           <div class="rectangle day-rect" data-day="Monday">
             <div class="day-label">monday</div>
@@ -93,12 +93,6 @@
       </section>
 
       <section class="panel tasks-panel" aria-label="Tasks">
-        <div class="panel-titlebar panel-titlebar-right tasks-panel-titlerow-desktop">
-          <h1 class="panel-title">tasks</h1>
-          <button class="icon-button" type="button" id="auth-trigger" aria-label="User">
-            👤
-          </button>
-        </div>
         <div class="rectangle tasks-field" id="tasks-field" aria-label="Tasks area">
           <div class="day-label tasks-field-label">tasks</div>
           <div id="tasks-field-root" class="tasks-field-root"></div>
@@ -106,50 +100,74 @@
       </section>
     </main>
 
-    <div class="modal-overlay" id="auth-overlay" hidden>
-      <div class="modal rectangle" role="dialog" aria-modal="true" aria-label="Authentication">
-        <button type="button" class="modal-close" id="auth-close" aria-label="Close">
-          ×
-        </button>
-        <p id="auth-status" class="auth-status" aria-live="polite"></p>
+    <div class="sidebar-overlay" id="auth-overlay" hidden></div>
+    <nav class="sidebar" id="sidebar" aria-label="Menu" hidden>
+      <button type="button" class="sidebar-close" id="auth-close" aria-label="Close">×</button>
+      <div class="sidebar-content">
         <p id="auth-message" class="auth-message" aria-live="polite"></p>
-        <div class="modal-theme" aria-labelledby="theme-colors-title">
-          <p id="theme-colors-title" class="modal-theme-title">Цвета интерфейса</p>
-          <p class="modal-theme-hint">Формат: #RRGGBB или #RGB</p>
-          <label class="modal-theme-label" for="theme-color-text">Текст</label>
-          <input
-            id="theme-color-text"
-            class="modal-theme-input"
-            type="text"
-            inputmode="text"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="#000000"
-          />
-          <label class="modal-theme-label" for="theme-color-background">Фон</label>
-          <input
-            id="theme-color-background"
-            class="modal-theme-input"
-            type="text"
-            inputmode="text"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="#ffffff"
-          />
-          <div class="modal-actions modal-theme-actions">
-            <button type="button" id="theme-apply">Применить цвета</button>
-            <button type="button" id="theme-reset">Сбросить</button>
+
+        <div class="sidebar-section">
+          <p class="sidebar-section-title">Themes</p>
+          <select id="theme-select" class="sidebar-select"></select>
+          <div id="theme-custom-fields" class="theme-custom-fields" hidden>
+            <label class="sidebar-label" for="theme-custom-name">Name</label>
+            <input
+              id="theme-custom-name"
+              class="sidebar-input"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="My theme"
+            />
+            <label class="sidebar-label" for="theme-color-text">Text</label>
+            <input
+              id="theme-color-text"
+              class="sidebar-input"
+              type="text"
+              inputmode="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="#000000"
+            />
+            <label class="sidebar-label" for="theme-color-background">Background</label>
+            <input
+              id="theme-color-background"
+              class="sidebar-input"
+              type="text"
+              inputmode="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="#ffffff"
+            />
+            <div class="sidebar-actions">
+              <button type="button" id="theme-apply">Save</button>
+            </div>
           </div>
         </div>
-        <input id="email" placeholder="Email" />
-        <input id="password" type="password" placeholder="Password" />
-        <div class="modal-actions">
-          <button type="button" id="auth-signup">Регистрация</button>
-          <button type="button" id="auth-login">Вход</button>
-          <button type="button" id="logout-button">Logout</button>
+
+        <div class="sidebar-section">
+          <p class="sidebar-section-title">Weeks</p>
+          <ul id="weeks-list" class="weeks-list"></ul>
+        </div>
+
+        <div class="sidebar-section">
+          <p id="auth-status" class="auth-status" aria-live="polite"></p>
+          <div id="auth-account-guest" class="auth-account-panel">
+            <input id="email" class="sidebar-input" placeholder="Email" />
+            <input id="password" class="sidebar-input" type="password" placeholder="Password" />
+            <div class="sidebar-actions">
+              <button type="button" id="auth-signup">Sign up</button>
+              <button type="button" id="auth-login">Login</button>
+            </div>
+          </div>
+          <div id="auth-account-signed-in" class="auth-account-panel" hidden>
+            <div class="sidebar-actions">
+              <button type="button" id="logout-button">Logout</button>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+    </nav>
 
     <script src="./js/script.js"></script>
   </body>

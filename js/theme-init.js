@@ -26,8 +26,26 @@
     else root.style.removeProperty("--color-background");
   }
 
+  const PRESETS = {
+    light: { text: "#000000", bg: "#ffffff" },
+    dark: { text: "#ffffff", bg: "#000000" },
+  };
+
   function initThemeFromStorage() {
     try {
+      const selected = localStorage.getItem("oneweek-theme-selected") || "light";
+      if (selected === "custom") {
+        const ct = localStorage.getItem("oneweek-custom-text");
+        const cb = localStorage.getItem("oneweek-custom-bg");
+        if (ct && cb) {
+          applyThemeToDocument(normalizeHexColor(ct), normalizeHexColor(cb));
+          return;
+        }
+      }
+      if (PRESETS[selected]) {
+        applyThemeToDocument(PRESETS[selected].text, PRESETS[selected].bg);
+        return;
+      }
       const t = localStorage.getItem(THEME_STORAGE_TEXT);
       const b = localStorage.getItem(THEME_STORAGE_BG);
       const nt = t ? normalizeHexColor(t) : "";

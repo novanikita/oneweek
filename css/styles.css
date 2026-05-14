@@ -1,7 +1,15 @@
 @font-face {
   font-family: "Proto Grotesk";
   src: url("../fonts/ProtoGrotesk.woff2") format("woff2");
-  font-weight: 100 900;
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Proto Grotesk";
+  src: url("../fonts/Proto Grotesk-Regular-Desktop.woff2") format("woff2");
+  font-weight: 600;
   font-style: normal;
   font-display: swap;
 }
@@ -48,15 +56,20 @@ body.week-offset-away .task-delete {
 .layout {
   display: grid;
   grid-template-columns: 2fr 1fr;
+  grid-template-rows: auto 1fr;
   min-height: 100dvh;
   height: 100dvh;
+}
+
+.layout-header {
+  grid-column: 1 / -1;
+  padding: 1em;
 }
 
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 1em;
-  padding: 1em;
+  padding: 0 1em 1em;
   min-width: 0;
 }
 
@@ -79,24 +92,29 @@ h1 {
   display: flex;
   align-items: center;
   gap: 0.5em;
+  line-height: 1;
   background: var(--color-background);
 }
 
 .panel-titlebar-right {
-  justify-content: space-between;
+  justify-content: flex-end;
 }
 
-.week-panel-titlebar #auth-trigger-mobile {
+.layout-header .panel-title {
   margin-left: auto;
-}
-
-/* Mobile-only duplicate; desktop uses #auth-trigger in tasks panel. */
-#auth-trigger-mobile {
-  display: none;
 }
 
 .panel-title {
   font: inherit;
+}
+
+.panel-title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.panel-title-link:hover {
+  text-decoration: underline;
 }
 
 .icon-button {
@@ -109,30 +127,44 @@ h1 {
   cursor: pointer;
 }
 
-.modal-overlay {
+/* Sidebar */
+.sidebar-overlay {
   position: fixed;
   inset: 0;
-  background: transparent;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  padding: 1em;
+  background: rgba(0, 0, 0, 0.25);
+  z-index: 90;
+  opacity: 1;
+  transition: opacity 0.3s ease;
 }
 
-.modal-overlay[hidden] {
-  display: none;
+.sidebar-overlay[hidden] {
+  display: block;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.modal {
-  position: relative;
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(18em, 80vw);
+  background: var(--color-background);
+  border-right: 0.07em solid var(--color-border);
+  z-index: 100;
   display: flex;
   flex-direction: column;
-  gap: 0.5em;
-  padding: 0.75em;
-  width: min(20em, calc(100vw - 2em));
+  transform: translateX(0);
+  transition: transform 0.3s ease;
 }
 
-.modal-close {
+.sidebar[hidden] {
+  display: flex;
+  transform: translateX(-100%);
+  pointer-events: none;
+}
+
+.sidebar-close {
   position: absolute;
   top: 0.25em;
   right: 0.25em;
@@ -140,14 +172,23 @@ h1 {
   color: inherit;
   background: transparent;
   border: 0;
-  padding: 0;
+  padding: 0.5em;
   line-height: 1;
   cursor: pointer;
+  z-index: 1;
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
 }
 
 .auth-status {
   margin: 0;
-  padding-right: 1.75em;
   font: inherit;
   font-size: 0.95em;
   line-height: 1.35;
@@ -162,62 +203,126 @@ h1 {
   line-height: 1.3;
 }
 
-.modal-theme {
+.auth-account-panel {
   display: flex;
   flex-direction: column;
   gap: 0.35em;
-  margin-top: 0.25em;
-  padding-top: 0.5em;
-  border-top: 0.05em solid var(--color-text);
 }
 
-.modal-theme-title {
+.auth-account-panel[hidden] {
+  display: none;
+}
+
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  padding-top: 0.5em;
+  border-top: 0.07em solid var(--color-border);
+}
+
+.sidebar-section:last-child {
+  margin-top: auto;
+}
+
+.sidebar-section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sidebar-section:nth-of-type(2) {
+  border-top: 0;
+  padding-top: 2em;
+}
+
+.sidebar-section-title {
   margin: 0;
   font: inherit;
   font-size: 0.95em;
   font-weight: 600;
 }
 
-.modal-theme-hint {
+.sidebar-hint {
   margin: 0 0 0.15em;
   font-size: 0.8em;
   line-height: 1.25;
   opacity: 0.85;
 }
 
-.modal-theme-label {
+.sidebar-label {
   font-size: 0.85em;
   opacity: 0.9;
 }
 
-.modal-theme-actions {
-  margin-top: 0.2em;
-}
-
-.modal input {
+.sidebar-select {
   font: inherit;
   color: inherit;
-  background: transparent;
-  border: 0.05em solid var(--color-text);
-  padding: 0.25em 0.5em;
-}
-
-.modal-actions {
-  display: flex;
-  gap: 0.5em;
-  flex-wrap: wrap;
-}
-
-.modal-actions button {
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border: 0.05em solid var(--color-text);
+  background: var(--color-background);
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.4em;
   padding: 0.25em 0.5em;
   cursor: pointer;
 }
 
-.modal-actions button:disabled {
+.theme-custom-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+}
+
+.theme-custom-fields[hidden] {
+  display: none;
+}
+
+.sidebar-input {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0.07em solid var(--color-border);
+  padding: 0.25em 0.5em;
+}
+
+.weeks-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.weeks-list li {
+  padding: 0.45em 0.6em;
+  cursor: pointer;
+  border-radius: 0.4em;
+}
+
+.weeks-list li:hover {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+}
+
+.weeks-list li.week-active {
+  font-weight: 600;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 0.5em;
+  flex-wrap: wrap;
+  margin-top: 0.2em;
+}
+
+.sidebar-actions button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border-radius: 0.4em;
+  border: 0.07em solid var(--color-border);
+  padding: 0.25em 0.5em;
+  cursor: pointer;
+}
+
+.sidebar-actions button:disabled {
   opacity: 0.55;
   cursor: default;
 }
@@ -229,12 +334,12 @@ h1 {
   gap: 0;
   flex: 1;
   min-height: 0;
-  border: 0.05em solid var(--color-text);
+  border: 0.07em solid var(--color-border);
 }
 
 .rectangle {
   background: var(--color-background);
-  border: 0.05em solid var(--color-text);
+  border: 0.07em solid var(--color-border);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -244,8 +349,8 @@ h1 {
 /* Single hairline grid inside the week: no doubled borders between day cells. */
 .week-grid > .rectangle {
   border: 0;
-  border-right: 0.05em solid var(--color-text);
-  border-bottom: 0.05em solid var(--color-text);
+  border-right: 0.07em solid var(--color-border);
+  border-bottom: 0.07em solid var(--color-border);
 }
 
 /* Wide: one line week|tasks; outer shell radii; 4×2 cell borders (last col / last row). */
@@ -271,7 +376,7 @@ h1 {
   }
 
   .tasks-field-label {
-    display: none;
+    display: block;
   }
 }
 
@@ -283,6 +388,7 @@ h1 {
   align-items: stretch;
   justify-content: flex-start;
   overflow: hidden;
+  padding: 0.6em;
 }
 
 .tasks-field-root {
@@ -317,24 +423,19 @@ h1 {
 }
 
 @media (max-width: 900px) {
-  #auth-trigger {
-    display: none;
-  }
-
-  #auth-trigger-mobile {
-    display: block;
-  }
-
   body {
     font-size: clamp(12px, 3.15vw, 14px);
   }
 
   .layout {
     grid-template-columns: 1fr;
-    /* Taller first row than 4×2 desktop: four day-rows need vertical space. */
-    grid-template-rows: clamp(26rem, 62dvh, 40rem) minmax(0, 1fr);
+    grid-template-rows: auto clamp(26rem, 62dvh, 40rem) minmax(0, 1fr);
     min-height: 100dvh;
     row-gap: 0;
+  }
+
+  .layout-header {
+    padding: 0.75em;
   }
 
   .panel {
@@ -354,11 +455,6 @@ h1 {
     gap: 0;
   }
 
-  /* Title + auth live in week header on mobile; label is inside tasks-field. */
-  .tasks-panel-titlerow-desktop {
-    display: none;
-  }
-
   .week-grid > .rectangle:nth-child(2n) {
     border-right-width: 0;
   }
@@ -367,16 +463,10 @@ h1 {
     border-bottom-width: 0;
   }
 
-  .panel-titlebar {
+  .layout-header {
     position: sticky;
     top: 0;
     z-index: 5;
-    background: var(--color-background);
-  }
-
-  /* Stacked shell: rounded top of week header; week grid square bottom at tasks seam; tasks rounded bottom. */
-  .week-panel > .panel-titlebar {
-    border-radius: var(--radius-shell) var(--radius-shell) 0 0;
   }
 
   .week-panel {
@@ -415,6 +505,7 @@ h1 {
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  margin-top: 0.5em;
 }
 
 .task-row {
@@ -422,7 +513,7 @@ h1 {
   align-items: center;
   min-width: 0;
   gap: 0.5em;
-  padding: 0.25em 0.5em;
+  padding: 0.2em 0;
   border: 0.05em solid transparent;
   border-radius: 0.15em;
 }
@@ -559,12 +650,16 @@ h1 {
   align-items: stretch;
   min-width: 0;
   min-height: 0;
+  padding: 0.6em;
 }
 
 .day-label {
-  padding-top: 0.25em;
-  padding-left: 0.5em; /* matches task text indentation */
   align-self: flex-start;
+  font-size: 0.65em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.35;
 }
 
 .day-tasks {

@@ -523,6 +523,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
   async function commitTask(taskId) {
     const { needRender } = await syncTaskFromInput(taskId);
+    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
     render();
     return !needRender;
   }
@@ -573,12 +574,12 @@ function toggleAndRepositionTask(tasks, idx) {
       const commitBtn = document.createElement("button");
       commitBtn.type = "button";
       commitBtn.className = "task-commit";
-      commitBtn.setAttribute("aria-label", "Готово");
+      commitBtn.setAttribute("aria-label", "Done");
 
       const deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
       deleteBtn.className = "task-delete";
-      deleteBtn.setAttribute("aria-label", "Удалить задачу");
+      deleteBtn.setAttribute("aria-label", "Delete task");
 
       row.appendChild(checkbox);
       row.appendChild(input);
@@ -747,7 +748,8 @@ function toggleAndRepositionTask(tasks, idx) {
   function toggleCheckedAndReorder(id, caret) {
     const idx = getTaskIndex(id);
     if (idx === -1) return;
-    const task = toggleAndRepositionTask(state.tasks, idx);
+    const task = state.tasks[idx];
+    task.checked = !task.checked;
 
     state.focusAfterRender = {
       id: task.id,
@@ -755,7 +757,6 @@ function toggleAndRepositionTask(tasks, idx) {
       end: caret?.end,
     };
 
-    // Persist completion state for non-empty tasks.
     if (!isTaskEmptyText(task.text)) {
       markTaskDirty(task);
       void (async () => {
@@ -1373,12 +1374,12 @@ function toggleAndRepositionTask(tasks, idx) {
         const commitBtn = document.createElement("button");
         commitBtn.type = "button";
         commitBtn.className = "task-commit";
-        commitBtn.setAttribute("aria-label", "Готово");
+        commitBtn.setAttribute("aria-label", "Done");
 
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
         deleteBtn.className = "task-delete";
-        deleteBtn.setAttribute("aria-label", "Удалить задачу");
+        deleteBtn.setAttribute("aria-label", "Delete task");
 
         const actions = document.createElement("div");
         actions.className = "task-row-actions";
@@ -1548,7 +1549,8 @@ function toggleAndRepositionTask(tasks, idx) {
     function toggleChecked(id) {
       const idx = getTaskIndex(id);
       if (idx === -1) return;
-      const task = toggleAndRepositionTask(state.tasks, idx);
+      const task = state.tasks[idx];
+      task.checked = !task.checked;
       if (!isTaskEmptyText(task.text)) {
         markTaskDirty(task);
         void (async () => {
@@ -1884,8 +1886,59 @@ function toggleAndRepositionTask(tasks, idx) {
       window.__weekOffset = Number(window.__weekOffset || 0) + delta;
       syncWeekAwayClass();
       updateDayOfMonthLabels();
+      renderWeeksList();
       window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
     })();
+  }
+
+  function setWeekOffset(offset) {
+    void (async () => {
+      if (typeof window.__flushAllTaskSaves === "function") {
+        await window.__flushAllTaskSaves();
+      }
+      window.__weekOffset = offset;
+      syncWeekAwayClass();
+      updateDayOfMonthLabels();
+      renderWeeksList();
+      window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
+    })();
+  }
+
+  const MONTH_NAMES = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+
+  function formatWeekLabel(mondayDate) {
+    const mon = new Date(mondayDate);
+    const sun = new Date(mon);
+    sun.setDate(sun.getDate() + 6);
+    const d1 = mon.getDate();
+    const m1 = MONTH_NAMES[mon.getMonth()];
+    const d2 = sun.getDate();
+    const m2 = MONTH_NAMES[sun.getMonth()];
+    return `${d1}${m1} — ${d2}${m2}`;
+  }
+
+  const PAST_WEEKS_COUNT = 12;
+  const weeksList = document.getElementById("weeks-list");
+
+  function renderWeeksList() {
+    if (!weeksList) return;
+    const currentOffset = Number(window.__weekOffset || 0);
+    weeksList.innerHTML = "";
+
+    for (let offset = 1; offset >= -PAST_WEEKS_COUNT; offset--) {
+      const monday = getWeekMondayStart(new Date(), offset);
+      const dateLabel = formatWeekLabel(monday);
+      const li = document.createElement("li");
+      let name;
+      if (offset === 0) name = "now";
+      else if (offset === 1) name = "next week";
+      else if (offset === -1) name = "last week";
+      else name = dateLabel;
+      li.textContent = name;
+      if (offset === currentOffset) li.classList.add("week-active");
+      li.addEventListener("click", () => setWeekOffset(offset));
+      weeksList.appendChild(li);
+    }
   }
 
   const prevBtn = document.getElementById("week-prev");
@@ -1895,13 +1948,14 @@ function toggleAndRepositionTask(tasks, idx) {
 
   syncWeekAwayClass();
   scheduleNextUpdate();
+  renderWeeksList();
 })();
 
 async function signUp() {
   const supabase = window.supabaseClient;
   if (!supabase) {
     console.error("Supabase client missing.");
-    return { ok: false, error: "Клиент авторизации не инициализирован." };
+    return { ok: false, error: "Auth client not initialized." };
   }
 
   const email = document.getElementById("email").value;
@@ -1913,7 +1967,7 @@ async function signUp() {
   });
 
   if (error) {
-    return { ok: false, error: error.message || "Ошибка регистрации." };
+    return { ok: false, error: error.message || "Sign up failed." };
   }
   return { ok: true };
 }
@@ -1922,7 +1976,7 @@ async function login() {
   const supabase = window.supabaseClient;
   if (!supabase) {
     console.error("Supabase client missing.");
-    return { ok: false, error: "Клиент авторизации не инициализирован." };
+    return { ok: false, error: "Auth client not initialized." };
   }
 
   const email = document.getElementById("email").value;
@@ -1934,7 +1988,7 @@ async function login() {
   });
 
   if (error) {
-    return { ok: false, error: error.message || "Ошибка входа." };
+    return { ok: false, error: error.message || "Login failed." };
   }
   return { ok: true };
 }
@@ -1943,13 +1997,13 @@ async function logout() {
   const supabase = window.supabaseClient;
   if (!supabase) {
     console.error("Supabase client missing.");
-    return { ok: false, error: "Клиент авторизации не инициализирован." };
+    return { ok: false, error: "Auth client not initialized." };
   }
 
   const { error } = await supabase.auth.signOut();
   if (error) {
     console.error("Sign out failed:", error);
-    return { ok: false, error: "Не удалось выйти из аккаунта." };
+    return { ok: false, error: "Logout failed." };
   }
   return { ok: true };
 }
@@ -1983,7 +2037,7 @@ window.addEventListener("load", () => {
     const res = await actionFn();
     setAuthPending(false);
     if (!res?.ok) {
-      setAuthMessage(res?.error || "Ошибка операции.", true);
+      setAuthMessage(res?.error || "Operation failed.", true);
       return false;
     }
     setAuthMessage(successText);
@@ -1991,21 +2045,32 @@ window.addEventListener("load", () => {
     return true;
   }
 
+  const authGuestPanel = document.getElementById("auth-account-guest");
+  const authSignedInPanel = document.getElementById("auth-account-signed-in");
+
+  function setAuthAccountPanels(loggedIn) {
+    if (authGuestPanel) authGuestPanel.hidden = loggedIn;
+    if (authSignedInPanel) authSignedInPanel.hidden = !loggedIn;
+  }
+
   async function refreshAuthStatus() {
     if (!authStatusEl) return;
     const supabase = window.supabaseClient;
     if (!supabase) {
       authStatusEl.textContent = "";
+      setAuthAccountPanels(false);
       return;
     }
     const {
       data: { session },
     } = await supabase.auth.getSession();
     const email = session?.user?.email?.trim();
+    const loggedIn = Boolean(email);
+    setAuthAccountPanels(loggedIn);
     if (email) {
-      authStatusEl.textContent = `Вы вошли в аккаунт: ${email}`;
+      authStatusEl.textContent = `Logged in as ${email}`;
     } else {
-      authStatusEl.textContent = "Вы не вошли в аккаунт";
+      authStatusEl.textContent = "Not logged in";
     }
   }
 
@@ -2019,34 +2084,102 @@ window.addEventListener("load", () => {
   const themeInputText = document.getElementById("theme-color-text");
   const themeInputBg = document.getElementById("theme-color-background");
   const themeApplyBtn = document.getElementById("theme-apply");
-  const themeResetBtn = document.getElementById("theme-reset");
+  const themeSelect = document.getElementById("theme-select");
+  const themeCustomFields = document.getElementById("theme-custom-fields");
+
+  const THEME_PRESETS = {
+    light: { text: "#000000", bg: "#ffffff", label: "Light" },
+    dark: { text: "#ffffff", bg: "#000000", label: "Dark" },
+  };
+  const THEME_SELECTED_KEY = "oneweek-theme-selected";
+  const THEME_CUSTOM_TEXT_KEY = "oneweek-custom-text";
+  const THEME_CUSTOM_BG_KEY = "oneweek-custom-bg";
+  const THEME_CUSTOM_NAME_KEY = "oneweek-custom-name";
+
+  function getCustomTheme() {
+    try {
+      const t = localStorage.getItem(THEME_CUSTOM_TEXT_KEY);
+      const b = localStorage.getItem(THEME_CUSTOM_BG_KEY);
+      const name = localStorage.getItem(THEME_CUSTOM_NAME_KEY) || "";
+      if (t && b) return { text: t, bg: b, name };
+    } catch (_) {}
+    return null;
+  }
+
+  function buildThemeOptions() {
+    if (!themeSelect) return;
+    themeSelect.innerHTML = "";
+    for (const [key, preset] of Object.entries(THEME_PRESETS)) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = preset.label;
+      themeSelect.appendChild(opt);
+    }
+    const custom = getCustomTheme();
+    if (custom) {
+      const opt = document.createElement("option");
+      opt.value = "custom";
+      opt.textContent = custom.name || `Custom (${custom.text} / ${custom.bg})`;
+      themeSelect.appendChild(opt);
+    }
+    const ownOpt = document.createElement("option");
+    ownOpt.value = "own";
+    ownOpt.textContent = "Own...";
+    themeSelect.appendChild(ownOpt);
+  }
+
+  function getSelectedThemeKey() {
+    try { return localStorage.getItem(THEME_SELECTED_KEY) || "light"; } catch (_) { return "light"; }
+  }
+
+  function applyThemeByKey(key) {
+    const tw = window.oneweekTheme;
+    if (!tw) return;
+    if (key === "custom") {
+      const custom = getCustomTheme();
+      if (custom) {
+        tw.persistTheme(custom.text, custom.bg);
+        tw.applyThemeToDocument(custom.text, custom.bg);
+      }
+    } else if (THEME_PRESETS[key]) {
+      const p = THEME_PRESETS[key];
+      tw.persistTheme(p.text, p.bg);
+      tw.applyThemeToDocument(p.text, p.bg);
+    }
+    try { localStorage.setItem(THEME_SELECTED_KEY, key); } catch (_) {}
+  }
 
   function syncThemeInputs() {
     const tw = window.oneweekTheme;
     if (!tw || !themeInputText || !themeInputBg) return;
-    themeInputText.value = tw.getCurrentHexForInput(
-      "--color-text",
-      tw.THEME_STORAGE_TEXT,
-      tw.DEFAULT_TEXT
-    );
-    themeInputBg.value = tw.getCurrentHexForInput(
-      "--color-background",
-      tw.THEME_STORAGE_BG,
-      tw.DEFAULT_BG
-    );
+    themeInputText.value = tw.getCurrentHexForInput("--color-text", tw.THEME_STORAGE_TEXT, tw.DEFAULT_TEXT);
+    themeInputBg.value = tw.getCurrentHexForInput("--color-background", tw.THEME_STORAGE_BG, tw.DEFAULT_BG);
   }
 
-  function openAuthPopup() {
-    if (!overlay) return;
-    overlay.hidden = false;
-    setAuthMessage("");
+  function syncThemeSelect() {
+    if (!themeSelect) return;
+    const key = getSelectedThemeKey();
+    buildThemeOptions();
+    themeSelect.value = key;
+    if (themeCustomFields) themeCustomFields.hidden = (key !== "own");
     syncThemeInputs();
+  }
+
+  const sidebar = document.getElementById("sidebar");
+
+  function openAuthPopup() {
+    if (!overlay || !sidebar) return;
+    overlay.hidden = false;
+    sidebar.hidden = false;
+    setAuthMessage("");
+    syncThemeSelect();
     void refreshAuthStatus();
   }
 
   function closeAuthPopup() {
-    if (!overlay) return;
+    if (!overlay || !sidebar) return;
     overlay.hidden = true;
+    sidebar.hidden = true;
   }
 
   authTriggers.forEach((btn) => {
@@ -2055,32 +2188,46 @@ window.addEventListener("load", () => {
   if (closeBtn) closeBtn.addEventListener("click", closeAuthPopup);
 
   if (overlay) {
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) closeAuthPopup();
-    });
+    overlay.addEventListener("click", closeAuthPopup);
   }
 
   if (signupBtn) {
     signupBtn.addEventListener("click", async () => {
       await runAuthAction(
-        "Выполняется регистрация...",
+        "Signing up...",
         signUp,
-        "Регистрация успешна. Проверьте почту для подтверждения."
+        "Sign up successful. Check your email for confirmation."
       );
     });
   }
 
   if (loginBtn) {
     loginBtn.addEventListener("click", async () => {
-      await runAuthAction("Выполняется вход...", login, "Вход выполнен.");
+      await runAuthAction("Logging in...", login, "Logged in.");
     });
   }
 
   if (logoutBtn) {
     logoutBtn.addEventListener("click", async () => {
-      await runAuthAction("Выполняется выход...", logout, "Вы вышли из аккаунта.");
+      await runAuthAction("Logging out...", logout, "Logged out.");
     });
   }
+
+  if (themeSelect) {
+    themeSelect.addEventListener("change", () => {
+      const key = themeSelect.value;
+      if (key === "own") {
+        if (themeCustomFields) themeCustomFields.hidden = false;
+        syncThemeInputs();
+        try { localStorage.setItem(THEME_SELECTED_KEY, "own"); } catch (_) {}
+        return;
+      }
+      if (themeCustomFields) themeCustomFields.hidden = true;
+      applyThemeByKey(key);
+    });
+  }
+
+  const themeCustomName = document.getElementById("theme-custom-name");
 
   if (themeApplyBtn) {
     themeApplyBtn.addEventListener("click", () => {
@@ -2089,25 +2236,25 @@ window.addEventListener("load", () => {
       const nt = tw.normalizeHexColor(themeInputText.value);
       const nb = tw.normalizeHexColor(themeInputBg.value);
       if (!nt || !nb) {
-        setAuthMessage("Укажите цвета в формате #RGB или #RRGGBB.", true);
+        setAuthMessage("Please enter colors in #RGB or #RRGGBB format.", true);
         return;
       }
+      const name = (themeCustomName ? themeCustomName.value.trim() : "") || "";
+      try {
+        localStorage.setItem(THEME_CUSTOM_TEXT_KEY, nt);
+        localStorage.setItem(THEME_CUSTOM_BG_KEY, nb);
+        localStorage.setItem(THEME_CUSTOM_NAME_KEY, name);
+        localStorage.setItem(THEME_SELECTED_KEY, "custom");
+      } catch (_) {}
       tw.persistTheme(nt, nb);
       tw.applyThemeToDocument(nt, nb);
-      syncThemeInputs();
-      setAuthMessage("Цвета сохранены.", false);
+      buildThemeOptions();
+      themeSelect.value = "custom";
+      if (themeCustomFields) themeCustomFields.hidden = true;
+      setAuthMessage("Custom theme saved.", false);
     });
   }
 
-  if (themeResetBtn) {
-    themeResetBtn.addEventListener("click", () => {
-      const tw = window.oneweekTheme;
-      if (!tw) return;
-      tw.persistTheme("", "");
-      tw.applyThemeToDocument("", "");
-      syncThemeInputs();
-      setAuthMessage("Цвета сброшены к значениям из стилей.", false);
-    });
-  }
+  syncThemeSelect();
 });
 
