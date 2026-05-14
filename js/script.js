@@ -587,6 +587,10 @@ function toggleAndRepositionTask(tasks, idx) {
       row.appendChild(deleteBtn);
       list.appendChild(row);
 
+      checkbox.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+      });
+
       commitBtn.addEventListener("mousedown", (e) => {
         e.preventDefault();
       });
@@ -1391,6 +1395,10 @@ function toggleAndRepositionTask(tasks, idx) {
         row.appendChild(main);
         list.appendChild(row);
 
+        checkbox.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+        });
+
         commitBtn.addEventListener("mousedown", (e) => {
           e.preventDefault();
         });
@@ -2086,6 +2094,7 @@ window.addEventListener("load", () => {
   const themeApplyBtn = document.getElementById("theme-apply");
   const themeSelect = document.getElementById("theme-select");
   const themeCustomFields = document.getElementById("theme-custom-fields");
+  const themeDeleteBtn = document.getElementById("theme-delete");
 
   const THEME_PRESETS = {
     light: { text: "#000000", bg: "#ffffff", label: "Light" },
@@ -2162,6 +2171,7 @@ window.addEventListener("load", () => {
     buildThemeOptions();
     themeSelect.value = key;
     if (themeCustomFields) themeCustomFields.hidden = (key !== "own");
+    if (themeDeleteBtn) themeDeleteBtn.hidden = (key !== "custom");
     syncThemeInputs();
   }
 
@@ -2218,16 +2228,31 @@ window.addEventListener("load", () => {
       const key = themeSelect.value;
       if (key === "own") {
         if (themeCustomFields) themeCustomFields.hidden = false;
+        if (themeDeleteBtn) themeDeleteBtn.hidden = true;
         syncThemeInputs();
         try { localStorage.setItem(THEME_SELECTED_KEY, "own"); } catch (_) {}
         return;
       }
       if (themeCustomFields) themeCustomFields.hidden = true;
+      if (themeDeleteBtn) themeDeleteBtn.hidden = (key !== "custom");
       applyThemeByKey(key);
     });
   }
 
   const themeCustomName = document.getElementById("theme-custom-name");
+
+  function previewCustomTheme() {
+    const tw = window.oneweekTheme;
+    if (!tw || !themeInputText || !themeInputBg) return;
+    const nt = tw.normalizeHexColor(themeInputText.value);
+    const nb = tw.normalizeHexColor(themeInputBg.value);
+    if (nt && nb) {
+      tw.applyThemeToDocument(nt, nb);
+    }
+  }
+
+  if (themeInputText) themeInputText.addEventListener("input", previewCustomTheme);
+  if (themeInputBg) themeInputBg.addEventListener("input", previewCustomTheme);
 
   if (themeApplyBtn) {
     themeApplyBtn.addEventListener("click", () => {
@@ -2252,6 +2277,18 @@ window.addEventListener("load", () => {
       themeSelect.value = "custom";
       if (themeCustomFields) themeCustomFields.hidden = true;
       setAuthMessage("Custom theme saved.", false);
+    });
+  }
+
+  if (themeDeleteBtn) {
+    themeDeleteBtn.addEventListener("click", () => {
+      try {
+        localStorage.removeItem(THEME_CUSTOM_TEXT_KEY);
+        localStorage.removeItem(THEME_CUSTOM_BG_KEY);
+        localStorage.removeItem(THEME_CUSTOM_NAME_KEY);
+      } catch (_) {}
+      applyThemeByKey("light");
+      syncThemeSelect();
     });
   }
 

@@ -24,6 +24,19 @@
     else root.style.removeProperty("--color-text");
     if (bgHex) root.style.setProperty("--color-background", bgHex);
     else root.style.removeProperty("--color-background");
+    const needsInvert = textHex && isLightColor(textHex);
+    root.style.setProperty("--icon-invert", needsInvert ? "invert(1)" : "none");
+  }
+
+  function isLightColor(hex) {
+    const h = hex.replace("#", "");
+    const full = h.length === 3
+      ? h[0]+h[0]+h[1]+h[1]+h[2]+h[2]
+      : h;
+    const r = parseInt(full.substring(0, 2), 16);
+    const g = parseInt(full.substring(2, 4), 16);
+    const b = parseInt(full.substring(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 > 128;
   }
 
   const PRESETS = {

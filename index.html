@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>oneweek</title>
+    <link rel="icon" href="./oneweek-favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./css/colors.css" />
     <link rel="stylesheet" href="./css/styles.css" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
@@ -25,7 +26,7 @@
           id="auth-trigger-mobile"
           aria-label="User"
         >
-          👤
+          <img src="./bar-icon.svg" width="16" height="16" alt="" aria-hidden="true" class="icon-themed" />
         </button>
         <h1 class="panel-title">oneweek by <a href="https://nikitanova.com/en/index.html" class="panel-title-link" target="_blank" rel="noopener">nova</a></h1>
         <button class="icon-button" type="button" id="week-prev" aria-label="Previous week" hidden>
@@ -109,6 +110,7 @@
         <div class="sidebar-section">
           <p class="sidebar-section-title">Themes</p>
           <select id="theme-select" class="sidebar-select"></select>
+          <button type="button" id="theme-delete" class="sidebar-delete-btn" hidden>Delete theme</button>
           <div id="theme-custom-fields" class="theme-custom-fields" hidden>
             <label class="sidebar-label" for="theme-custom-name">Name</label>
             <input
