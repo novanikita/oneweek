@@ -52,6 +52,7 @@ body.week-offset-away .task-checkbox:not(.checked) {
 body.week-offset-away .task-commit,
 body.week-offset-away .task-delete {
   background: var(--color-background);
+  color: var(--color-text);
 }
 
 .layout {
@@ -699,9 +700,10 @@ h1 {
   align-items: center;
   min-width: 0;
   gap: 0.45em;
-  padding: 0.2em 0.38em 0.2em 0.45em;
+  padding: 0.28em 0.38em 0.28em 0.45em;
   border: 0.07em solid transparent;
   border-radius: 0.4em;
+  color: var(--color-text);
 }
 
 .task-row:has(.task-text:focus),
@@ -724,6 +726,8 @@ h1 {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  display: flex;
+  align-items: center;
 }
 
 .task-row-actions {
@@ -752,6 +756,7 @@ h1 {
 
 .task-checkbox {
   flex: 0 0 auto;
+  align-self: center;
   width: 1.2em;
   height: 1.2em;
   border: 0.05em solid var(--color-text);
@@ -775,12 +780,22 @@ h1 {
   mask: url("../check-mark.svg") center / contain no-repeat;
 }
 
+.task-row-actions .task-commit,
+.task-row-actions .task-delete {
+  width: 1.2em;
+  height: 1.2em;
+  min-width: 1.2em;
+  min-height: 1.2em;
+  padding: 0;
+}
+
 .task-commit,
 .task-delete,
 .task-drag-handle {
   flex: 0 0 auto;
+  color: var(--color-text);
   opacity: 0.8;
-  border-color: currentColor;
+  border-color: color-mix(in srgb, var(--color-text) 35%, transparent);
 }
 
 .task-row:has(.task-text:focus) .task-commit,
@@ -807,9 +822,9 @@ h1 {
 .task-commit::after {
   content: "";
   display: block;
-  width: 0.85em;
-  height: 0.85em;
-  background-color: currentColor;
+  width: 0.75em;
+  height: 0.75em;
+  background-color: var(--color-text);
   -webkit-mask: url("../check-mark.svg") center / contain no-repeat;
   mask: url("../check-mark.svg") center / contain no-repeat;
 }
@@ -817,9 +832,9 @@ h1 {
 .task-delete::after {
   content: "";
   display: block;
-  width: 0.85em;
-  height: 0.85em;
-  background-color: currentColor;
+  width: 0.75em;
+  height: 0.75em;
+  background-color: var(--color-text);
   -webkit-mask: url("../trash.svg") center / contain no-repeat;
   mask: url("../trash.svg") center / contain no-repeat;
 }
@@ -831,6 +846,12 @@ h1 {
   opacity: 1;
 }
 
+.task-row:has(.task-text:focus) .task-delete:hover::after,
+.task-row:has(.task-commit:focus) .task-delete:hover::after,
+.task-row:has(.task-delete:focus) .task-delete:hover::after {
+  background-color: #c62828;
+}
+
 .task-row:has(.task-text:focus) .task-commit:hover,
 .task-row:has(.task-commit:focus) .task-commit:hover,
 .task-row:has(.task-delete:focus) .task-commit:hover,
@@ -839,7 +860,11 @@ h1 {
 }
 
 .task-drag-handle {
-  padding: 0.4em 0.55em;
+  width: 1.2em;
+  height: 1.2em;
+  min-width: 1.2em;
+  min-height: 1.2em;
+  padding: 0;
   border: 0;
   background: transparent;
   cursor: grab;
@@ -847,7 +872,7 @@ h1 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: inherit;
+  color: var(--color-text);
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
@@ -864,9 +889,9 @@ h1 {
 
 .task-drag-handle-icon {
   display: block;
-  width: 0.6em;
-  height: 0.9em;
-  background-color: currentColor;
+  width: 0.55em;
+  height: 0.8em;
+  background-color: var(--color-text);
   pointer-events: none;
   -webkit-mask: url("../drag-handle.svg") center / contain no-repeat;
   mask: url("../drag-handle.svg") center / contain no-repeat;
@@ -881,6 +906,7 @@ h1 {
 
 .task-text {
   flex: 1 1 auto;
+  align-self: center;
   min-width: 0;
   min-height: 1.2em;
   font: inherit;
@@ -888,6 +914,7 @@ h1 {
   outline: none;
   background: transparent;
   padding: 0;
+  margin: 0;
   color: var(--color-text);
   width: 100%;
   white-space: pre-wrap;
