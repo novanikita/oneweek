@@ -16,7 +16,8 @@
 
 :root {
   font-size: 1em;
-  font-family: "Proto Grotesk", system-ui, sans-serif;
+  --font-family: "Proto Grotesk", system-ui, sans-serif;
+  font-family: var(--font-family);
 }
 
 html,
@@ -44,7 +45,7 @@ body.week-offset-away .rectangle {
   background: var(--color-background);
 }
 
-body.week-offset-away .task-checkbox {
+body.week-offset-away .task-checkbox:not(.checked) {
   background: var(--color-background);
 }
 
@@ -64,6 +65,98 @@ body.week-offset-away .task-delete {
 .layout-header {
   grid-column: 1 / -1;
   padding: 1em;
+}
+
+.panel-titlebar.layout-header {
+  --header-bar-height: calc(1em + 0.5em + 0.14em);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.5em;
+  min-height: var(--header-bar-height);
+}
+
+.layout-header-menu {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.layout-header-week {
+  grid-column: 2;
+  justify-self: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.layout-header-right {
+  grid-column: 3;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75em;
+  min-width: 0;
+  min-height: var(--header-bar-height);
+}
+
+.week-nav {
+  --week-nav-gap: 1em;
+  --week-nav-label-width: 12em;
+  display: grid;
+  grid-template-columns: 1em var(--week-nav-gap) var(--week-nav-label-width) var(--week-nav-gap) 1em;
+  align-items: center;
+  justify-items: center;
+  width: calc(1em + var(--week-nav-gap) + var(--week-nav-label-width) + var(--week-nav-gap) + 1em);
+}
+
+.week-nav-label {
+  grid-column: 3;
+  grid-row: 1;
+  font: inherit;
+  font-size: 1em;
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+  text-align: center;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.week-nav-btn {
+  grid-row: 1;
+  flex-shrink: 0;
+}
+
+.week-nav-btn:not(.week-nav-btn--next) {
+  grid-column: 1;
+}
+
+.week-nav-btn--next {
+  grid-column: 5;
+}
+
+.header-text-btn {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border-radius: 0.4em;
+  border: 0.07em solid var(--color-border);
+  box-sizing: border-box;
+  height: var(--header-bar-height);
+  padding: 0 0.5em;
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#week-go-this-week[hidden] {
+  display: none !important;
 }
 
 .panel {
@@ -100,8 +193,8 @@ h1 {
   justify-content: flex-end;
 }
 
-.layout-header .panel-title {
-  margin-left: auto;
+.layout-header-right .panel-title {
+  margin: 0;
 }
 
 .panel-title {
@@ -128,7 +221,22 @@ h1 {
 }
 
 .icon-themed {
-  filter: var(--icon-invert, none);
+  display: block;
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  background-color: currentColor;
+  mask: url("../bar-icon.svg") center / contain no-repeat;
+  -webkit-mask: url("../bar-icon.svg") center / contain no-repeat;
+}
+
+.icon-themed.icon-themed-arrow {
+  mask: url("../arrow.svg") center / contain no-repeat;
+  -webkit-mask: url("../arrow.svg") center / contain no-repeat;
+}
+
+.week-nav-btn--next .icon-themed-arrow {
+  transform: scaleX(-1);
 }
 
 /* Sidebar */
@@ -184,11 +292,59 @@ h1 {
 
 .sidebar-content {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 1em;
   display: flex;
   flex-direction: column;
+  gap: 0;
+}
+
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   gap: 0.5em;
+}
+
+.weeks-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin-right: -0.15em;
+  padding-right: 0.15em;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text) 30%, transparent) transparent;
+}
+
+.weeks-list-scroll::-webkit-scrollbar {
+  width: 0.3em;
+}
+
+.weeks-list-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.weeks-list-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-text) 30%, transparent);
+  border-radius: 0.4em;
+}
+
+.weeks-list-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.sidebar-account {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  margin-top: 0.5em;
+  padding-top: 0.75em;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  background: var(--color-background);
 }
 
 .auth-status {
@@ -225,16 +381,15 @@ h1 {
   border-top: 0.07em solid var(--color-border);
 }
 
-.sidebar-section:last-child {
-  margin-top: auto;
-}
-
-.sidebar-section:first-of-type {
+.sidebar-scroll .sidebar-section:first-of-type {
   border-top: 0;
   padding-top: 0;
 }
 
-.sidebar-section:nth-of-type(2) {
+.sidebar-section-weeks {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
   border-top: 0;
   padding-top: 2em;
 }
@@ -258,14 +413,37 @@ h1 {
   opacity: 0.9;
 }
 
-.sidebar-select {
+.sidebar-select,
+.sidebar-input {
   font: inherit;
+  font-family: inherit;
   color: inherit;
   background: var(--color-background);
   border: 0.07em solid var(--color-border);
   border-radius: 0.4em;
   padding: 0.25em 0.5em;
+  width: 100%;
+  max-width: 100%;
+}
+
+.sidebar-select {
   cursor: pointer;
+}
+
+.sidebar-input {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.sidebar-input::placeholder {
+  color: inherit;
+  opacity: 0.5;
+}
+
+.sidebar-select:focus-visible,
+.sidebar-input:focus-visible {
+  outline: 0.07em solid color-mix(in srgb, var(--color-text) 45%, transparent);
+  outline-offset: 0.1em;
 }
 
 .theme-custom-fields {
@@ -276,14 +454,6 @@ h1 {
 
 .theme-custom-fields[hidden] {
   display: none;
-}
-
-.sidebar-input {
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border: 0.07em solid var(--color-border);
-  padding: 0.25em 0.5em;
 }
 
 .weeks-list {
@@ -316,7 +486,13 @@ h1 {
   margin-top: 0.2em;
 }
 
-.sidebar-actions button {
+#theme-delete-actions[hidden] {
+  display: none !important;
+}
+
+.sidebar-actions button,
+.task-commit,
+.task-delete {
   font: inherit;
   color: inherit;
   background: transparent;
@@ -324,28 +500,15 @@ h1 {
   border: 0.07em solid var(--color-border);
   padding: 0.25em 0.5em;
   cursor: pointer;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .sidebar-actions button:disabled {
   opacity: 0.55;
   cursor: default;
-}
-
-.sidebar-delete-btn {
-  font: inherit;
-  font-size: 0.85em;
-  color: inherit;
-  background: transparent;
-  border: 0.07em solid var(--color-border);
-  border-radius: 0.4em;
-  padding: 0.25em 0.5em;
-  margin-top: 0.3em;
-  cursor: pointer;
-  opacity: 0.7;
-}
-
-.sidebar-delete-btn:hover {
-  opacity: 1;
 }
 
 .week-grid {
@@ -410,6 +573,7 @@ h1 {
   justify-content: flex-start;
   overflow: hidden;
   padding: 0.6em;
+  position: relative;
 }
 
 .tasks-field-root {
@@ -417,6 +581,7 @@ h1 {
   min-height: 0;
   overflow: auto;
   cursor: text;
+  position: relative;
 }
 
 /* Hover glow: instant on enter (0s on :hover), fades out over 0.5s when pointer leaves. */
@@ -533,18 +698,56 @@ h1 {
   display: flex;
   align-items: center;
   min-width: 0;
-  gap: 0.5em;
-  padding: 0.2em 0;
-  border: 0.05em solid transparent;
-  border-radius: 0.15em;
+  gap: 0.45em;
+  padding: 0.2em 0.38em 0.2em 0.45em;
+  border: 0.07em solid transparent;
+  border-radius: 0.4em;
 }
 
-.task-row:has(.task-text:focus) {
-  border-color: var(--color-text);
+.task-row:has(.task-text:focus),
+.task-row:has(.task-commit:focus),
+.task-row:has(.task-delete:focus),
+.task-row:has(.task-drag-handle:focus),
+.task-row.task-row-reorder-active,
+.task-row.task-row-dragging {
+  position: relative;
+  z-index: 4;
+  border-color: var(--color-border);
+  padding-right: 5.65em;
 }
 
 .task-row.task-row-sub {
   padding-left: 2em;
+}
+
+.task-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.task-row-actions {
+  display: none;
+  position: absolute;
+  right: 0.38em;
+  top: 50%;
+  transform: translateY(-50%);
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 0.35em;
+  align-items: center;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.task-row:has(.task-text:focus) .task-row-actions,
+.task-row:has(.task-commit:focus) .task-row-actions,
+.task-row:has(.task-delete:focus) .task-row-actions,
+.task-row:has(.task-drag-handle:focus) .task-row-actions,
+.task-row.task-row-reorder-active .task-row-actions,
+.task-row.task-row-dragging .task-row-actions {
+  display: flex;
+  pointer-events: auto;
 }
 
 .task-checkbox {
@@ -572,61 +775,108 @@ h1 {
   mask: url("../check-mark.svg") center / contain no-repeat;
 }
 
-.task-commit {
+.task-commit,
+.task-delete,
+.task-drag-handle {
   flex: 0 0 auto;
-  font: inherit;
-  color: var(--color-text);
-  width: 1.4em;
-  height: 1.4em;
-  padding: 0;
-  border: 0.05em solid var(--color-text);
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  line-height: 1;
-  opacity: 0;
-  pointer-events: none;
+  opacity: 0.8;
+  border-color: currentColor;
 }
 
-.task-row:has(.task-text:focus) .task-commit {
-  opacity: 1;
-  pointer-events: auto;
+.task-row:has(.task-text:focus) .task-commit,
+.task-row:has(.task-text:focus) .task-delete,
+.task-row:has(.task-text:focus) .task-drag-handle,
+.task-row:has(.task-commit:focus) .task-commit,
+.task-row:has(.task-commit:focus) .task-delete,
+.task-row:has(.task-commit:focus) .task-drag-handle,
+.task-row:has(.task-delete:focus) .task-commit,
+.task-row:has(.task-delete:focus) .task-delete,
+.task-row:has(.task-delete:focus) .task-drag-handle,
+.task-row:has(.task-drag-handle:focus) .task-commit,
+.task-row:has(.task-drag-handle:focus) .task-delete,
+.task-row:has(.task-drag-handle:focus) .task-drag-handle,
+.task-row.task-row-reorder-active .task-commit,
+.task-row.task-row-reorder-active .task-delete,
+.task-row.task-row-reorder-active .task-drag-handle,
+.task-row.task-row-dragging .task-commit,
+.task-row.task-row-dragging .task-delete,
+.task-row.task-row-dragging .task-drag-handle {
+  opacity: 0.8;
 }
 
 .task-commit::after {
-  content: "✓";
-  font-size: 0.9em;
-}
-
-.task-delete {
-  flex: 0 0 auto;
-  font: inherit;
-  color: var(--color-text);
-  width: 1.4em;
-  height: 1.4em;
-  padding: 0;
-  border: 0.05em solid var(--color-text);
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  line-height: 1;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.task-row:has(.task-text:focus) .task-delete {
-  opacity: 1;
-  pointer-events: auto;
+  content: "";
+  display: block;
+  width: 0.85em;
+  height: 0.85em;
+  background-color: currentColor;
+  -webkit-mask: url("../check-mark.svg") center / contain no-repeat;
+  mask: url("../check-mark.svg") center / contain no-repeat;
 }
 
 .task-delete::after {
-  content: "🗑";
-  font-size: 0.75em;
+  content: "";
+  display: block;
+  width: 0.85em;
+  height: 0.85em;
+  background-color: currentColor;
+  -webkit-mask: url("../trash.svg") center / contain no-repeat;
+  mask: url("../trash.svg") center / contain no-repeat;
+}
+
+.task-row:has(.task-text:focus) .task-delete:hover,
+.task-row:has(.task-commit:focus) .task-delete:hover,
+.task-row:has(.task-delete:focus) .task-delete:hover {
+  color: #c62828;
+  opacity: 1;
+}
+
+.task-row:has(.task-text:focus) .task-commit:hover,
+.task-row:has(.task-commit:focus) .task-commit:hover,
+.task-row:has(.task-delete:focus) .task-commit:hover,
+.task-row:has(.task-drag-handle:focus) .task-commit:hover {
+  opacity: 1;
+}
+
+.task-drag-handle {
+  padding: 0.4em 0.55em;
+  border: 0;
+  background: transparent;
+  cursor: grab;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  -webkit-user-drag: element;
+}
+
+.task-drag-handle:active {
+  cursor: grabbing;
+}
+
+.task-row-dragging {
+  opacity: 0.65;
+}
+
+.task-drag-handle-icon {
+  display: block;
+  width: 0.6em;
+  height: 0.9em;
+  background-color: currentColor;
+  pointer-events: none;
+  -webkit-mask: url("../drag-handle.svg") center / contain no-repeat;
+  mask: url("../drag-handle.svg") center / contain no-repeat;
+}
+
+.task-row:has(.task-text:focus) .task-drag-handle:hover,
+.task-row:has(.task-commit:focus) .task-drag-handle:hover,
+.task-row:has(.task-delete:focus) .task-drag-handle:hover,
+.task-row:has(.task-drag-handle:focus) .task-drag-handle:hover {
+  opacity: 1;
 }
 
 .task-text {
@@ -645,6 +895,7 @@ h1 {
   resize: none;
   overflow: hidden;
   line-height: 1.2;
+  -webkit-user-drag: none;
 }
 
 .task-text:focus {
@@ -652,11 +903,8 @@ h1 {
   outline-offset: 0;
 }
 
-.task-row.completed {
-  opacity: 0.5;
-}
-
 .task-row.completed .task-text {
+  opacity: 0.5;
   text-decoration: line-through;
   color: var(--color-text);
 }
@@ -668,6 +916,7 @@ h1 {
   min-width: 0;
   min-height: 0;
   padding: 0.6em;
+  position: relative;
 }
 
 .day-label {
@@ -686,60 +935,23 @@ h1 {
   overflow: auto;
   cursor: text;
   display: block;
+  position: relative;
+}
+
+.task-drop-indicator {
+  position: absolute;
+  left: 0.45em;
+  right: 0.38em;
+  height: 1px;
+  margin-top: -0.5px;
+  background: var(--color-text);
+  border-radius: 0.5px;
+  pointer-events: none;
+  z-index: 20;
+  opacity: 0.5;
 }
 
 .day-tasks .task-row {
   position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: auto;
-  align-items: center;
-  column-gap: 0.5em;
-}
-
-.day-tasks .task-row:has(.task-text:focus),
-.day-tasks .task-row:has(.task-commit:focus),
-.day-tasks .task-row:has(.task-delete:focus) {
-  z-index: 4;
-}
-
-.day-tasks .task-checkbox {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.day-tasks .task-row-actions {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  margin-top: 0.15em;
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 0.5em;
-  align-items: center;
-  justify-content: flex-start;
-  pointer-events: none;
-}
-
-.day-tasks .task-row:has(.task-text:focus) .task-row-actions,
-.day-tasks .task-row:has(.task-commit:focus) .task-row-actions,
-.day-tasks .task-row:has(.task-delete:focus) .task-row-actions {
-  pointer-events: auto;
-}
-
-.day-tasks .task-main {
-  grid-column: 2;
-  grid-row: 1;
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.task-main {
-  flex: 1;
-  min-width: 0;
 }

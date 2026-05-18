@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>oneweek</title>
     <link rel="icon" href="./oneweek-favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="./css/colors.css" />
     <link rel="stylesheet" href="./css/styles.css" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
@@ -21,20 +23,30 @@
     <main class="layout">
       <header class="panel-titlebar layout-header">
         <button
-          class="icon-button"
+          class="icon-button layout-header-menu"
           type="button"
           id="auth-trigger-mobile"
           aria-label="User"
         >
-          <img src="./bar-icon.svg" width="16" height="16" alt="" aria-hidden="true" class="icon-themed" />
+          <span class="icon-themed" aria-hidden="true"></span>
         </button>
-        <h1 class="panel-title">oneweek by <a href="https://nikitanova.com/en/index.html" class="panel-title-link" target="_blank" rel="noopener">nova</a></h1>
-        <button class="icon-button" type="button" id="week-prev" aria-label="Previous week" hidden>
-          ←
-        </button>
-        <button class="icon-button" type="button" id="week-next" aria-label="Next week" hidden>
-          →
-        </button>
+        <div class="layout-header-week">
+          <nav class="week-nav" aria-label="Week navigation">
+            <button class="icon-button week-nav-btn" type="button" id="week-prev" aria-label="Previous week">
+              <span class="icon-themed icon-themed-arrow" aria-hidden="true"></span>
+            </button>
+            <span class="week-nav-label" id="week-nav-label">this week</span>
+            <button class="icon-button week-nav-btn week-nav-btn--next" type="button" id="week-next" aria-label="Next week">
+              <span class="icon-themed icon-themed-arrow" aria-hidden="true"></span>
+            </button>
+          </nav>
+        </div>
+        <div class="layout-header-right">
+          <button type="button" class="header-text-btn" id="week-go-this-week" hidden>
+            go to this week
+          </button>
+          <h1 class="panel-title">oneweek by <a href="https://nikitanova.com/en/index.html" class="panel-title-link" target="_blank" rel="noopener">nova</a></h1>
+        </div>
       </header>
       <section class="panel week-panel" aria-label="Week">
         <div class="week-grid">
@@ -105,12 +117,15 @@
     <nav class="sidebar" id="sidebar" aria-label="Menu" hidden>
       <button type="button" class="sidebar-close" id="auth-close" aria-label="Close">×</button>
       <div class="sidebar-content">
+        <div class="sidebar-scroll">
         <p id="auth-message" class="auth-message" aria-live="polite"></p>
 
         <div class="sidebar-section">
           <p class="sidebar-section-title">Themes</p>
           <select id="theme-select" class="sidebar-select"></select>
-          <button type="button" id="theme-delete" class="sidebar-delete-btn" hidden>Delete theme</button>
+          <div class="sidebar-actions" id="theme-delete-actions" hidden>
+            <button type="button" id="theme-delete" hidden>Delete theme</button>
+          </div>
           <div id="theme-custom-fields" class="theme-custom-fields" hidden>
             <label class="sidebar-label" for="theme-custom-name">Name</label>
             <input
@@ -141,18 +156,23 @@
               autocomplete="off"
               placeholder="#ffffff"
             />
+            <label class="sidebar-label" for="theme-font">Font</label>
+            <select id="theme-font" class="sidebar-select"></select>
             <div class="sidebar-actions">
               <button type="button" id="theme-apply">Save</button>
             </div>
           </div>
         </div>
 
-        <div class="sidebar-section">
+        <div class="sidebar-section sidebar-section-weeks">
           <p class="sidebar-section-title">Weeks</p>
-          <ul id="weeks-list" class="weeks-list"></ul>
+          <div class="weeks-list-scroll">
+            <ul id="weeks-list" class="weeks-list"></ul>
+          </div>
+        </div>
         </div>
 
-        <div class="sidebar-section">
+        <div class="sidebar-account sidebar-section">
           <p id="auth-status" class="auth-status" aria-live="polite"></p>
           <div id="auth-account-guest" class="auth-account-panel">
             <input id="email" class="sidebar-input" placeholder="Email" />

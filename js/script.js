@@ -131,6 +131,235 @@ function writeDragPayloadToDataTransfer(dataTransfer, payload) {
   }
 }
 
+/** True between drag-handle mousedown and dragend / mouseup (blur can fire before dragstart). */
+let taskDragInteractionActive = false;
+
+function createTaskDragHandle() {
+  const handle = document.createElement("div");
+  handle.className = "task-drag-handle";
+  handle.setAttribute("role", "button");
+  handle.setAttribute("tabindex", "-1");
+  handle.setAttribute("aria-label", "Reorder task");
+  const icon = document.createElement("span");
+  icon.className = "task-drag-handle-icon";
+  icon.setAttribute("aria-hidden", "true");
+  handle.appendChild(icon);
+  return handle;
+}
+
+function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd) {
+  dragHandle.draggable = false;
+  if (!isAuthed) {
+    row.draggable = false;
+    return;
+  }
+  row.draggable = true;
+
+  let restoreEditFocusInput = null;
+  let reorderFromHandle = false;
+  let dragImageOffsetX = 0;
+  let dragImageOffsetY = 0;
+
+  const beginDragInteraction = () => {
+    const input = row.querySelector(".task-text");
+    if (input && document.activeElement === input) {
+      restoreEditFocusInput = input;
+    }
+    taskDragInteractionActive = true;
+    row.classList.add("task-row-reorder-active");
+  };
+
+  const endDragInteraction = () => {
+    taskDragInteractionActive = false;
+    reorderFromHandle = false;
+    row.classList.remove("task-row-reorder-active");
+    const input = restoreEditFocusInput;
+    restoreEditFocusInput = null;
+    if (input?.isConnected) {
+      requestAnimationFrame(() => {
+        input.focus({ preventScroll: true });
+      });
+    }
+  };
+
+  const armPointerUpCleanup = () => {
+    const onPointerUp = () => {
+      window.removeEventListener("mouseup", onPointerUp);
+      window.removeEventListener("pointerup", onPointerUp);
+      requestAnimationFrame(() => {
+        if (!row.classList.contains("task-row-dragging")) {
+          endDragInteraction();
+        }
+      });
+    };
+    window.addEventListener("mouseup", onPointerUp);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  const onHandlePointerDown = (e) => {
+    reorderFromHandle = true;
+    const rect = row.getBoundingClientRect();
+    dragImageOffsetX = e.clientX - rect.left;
+    dragImageOffsetY = e.clientY - rect.top;
+    beginDragInteraction();
+    e.stopPropagation();
+    armPointerUpCleanup();
+  };
+
+  dragHandle.addEventListener("mousedown", onHandlePointerDown, true);
+  dragHandle.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+  row.addEventListener("dragstart", (e) => {
+    if (!reorderFromHandle) {
+      e.preventDefault();
+      return;
+    }
+    beginDragInteraction();
+    row.classList.add("task-row-dragging");
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      if (e.dataTransfer.setDragImage) {
+        e.dataTransfer.setDragImage(row, dragImageOffsetX, dragImageOffsetY);
+      }
+    }
+    onDragStart(e);
+  });
+
+  row.addEventListener("dragend", () => {
+    reorderFromHandle = false;
+    row.classList.remove("task-row-dragging");
+    endDragInteraction();
+    hideAllTaskDropIndicators();
+    onDragEnd();
+  });
+}
+
+function taskRowInsertBefore(e, row) {
+  const rect = row.getBoundingClientRect();
+  return e.clientY < rect.top + rect.height / 2;
+}
+
+function computeReorderInsertIndex(fromIndex, targetIndex, insertBefore) {
+  let insertAt = insertBefore ? targetIndex : targetIndex + 1;
+  if (fromIndex >= 0 && fromIndex < insertAt) insertAt--;
+  return insertAt;
+}
+
+function reorderTaskInArray(tasks, fromIndex, targetIndex, insertBefore) {
+  if (fromIndex < 0 || targetIndex < 0) return null;
+  const insertAt = computeReorderInsertIndex(fromIndex, targetIndex, insertBefore);
+  if (insertAt === fromIndex) return null;
+  const [moved] = tasks.splice(fromIndex, 1);
+  tasks.splice(insertAt, 0, moved);
+  return moved;
+}
+
+function dataTransferHasType(dt, mime) {
+  const types = dt?.types;
+  if (!types) return false;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === mime) return true;
+  }
+  return false;
+}
+
+function isActiveTaskDragEvent(e) {
+  if (taskDragInteractionActive) return true;
+  if (typeof window !== "undefined" && window.__dragTaskPayload != null) return true;
+  const dt = e.dataTransfer;
+  if (!dt) return false;
+  if (dataTransferHasType(dt, ONEWEEK_DRAG_PAYLOAD_MIME)) return true;
+  if (dataTransferHasType(dt, "text/plain")) return true;
+  return dt.types != null && dt.types.length > 0;
+}
+
+function createTaskDropIndicator(anchorEl, scrollEl = anchorEl) {
+  const ensureIndicator = () => {
+    let indicator = anchorEl.querySelector(":scope > .task-drop-indicator");
+    if (!indicator?.isConnected) {
+      indicator = document.createElement("div");
+      indicator.className = "task-drop-indicator";
+      indicator.setAttribute("aria-hidden", "true");
+      indicator.hidden = true;
+      anchorEl.appendChild(indicator);
+    }
+    return indicator;
+  };
+
+  const placeAtClientY = (clientY) => {
+    const indicator = ensureIndicator();
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const top =
+      scrollEl === anchorEl
+        ? clientY - anchorRect.top + scrollEl.scrollTop
+        : clientY - anchorRect.top;
+    indicator.style.top = `${top}px`;
+    indicator.hidden = false;
+  };
+
+  return {
+    showBeforeRow(row) {
+      placeAtClientY(row.getBoundingClientRect().top);
+    },
+    showAfterRow(row) {
+      placeAtClientY(row.getBoundingClientRect().bottom);
+    },
+    showAtEnd(listEl) {
+      const rows = listEl.querySelectorAll(".task-row:not(.task-row-dragging)");
+      if (rows.length) {
+        placeAtClientY(rows[rows.length - 1].getBoundingClientRect().bottom);
+      } else {
+        placeAtClientY(listEl.getBoundingClientRect().top + 4);
+      }
+    },
+    hide() {
+      indicator.hidden = true;
+    },
+  };
+}
+
+function hideAllTaskDropIndicators() {
+  document.querySelectorAll(".task-drop-indicator").forEach((el) => {
+    el.hidden = true;
+  });
+}
+
+function updateTaskDropIndicator(anchorEl, indicator, listEl, e, draggedRowId, getTaskIndex) {
+  if (!listEl) {
+    indicator.hide();
+    return;
+  }
+
+  const row = e.target.closest?.(".task-row");
+  if (!row || !listEl.contains(row)) {
+    indicator.showAtEnd(listEl);
+    return;
+  }
+
+  const insertBefore = taskRowInsertBefore(e, row);
+  const rowId = row.dataset.id;
+  if (rowId && rowId === draggedRowId) {
+    const from = getTaskIndex(rowId);
+    if (from >= 0) {
+      const insertAt = computeReorderInsertIndex(from, from, insertBefore);
+      if (insertAt === from) {
+        indicator.hide();
+        return;
+      }
+    }
+  }
+
+  if (insertBefore) indicator.showBeforeRow(row);
+  else indicator.showAfterRow(row);
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("dragend", hideAllTaskDropIndicators);
+}
+
 /**
  * One Supabase write for cross-panel moves (type + day + content in one request).
  * Do not require `.select()` after update: RLS often allows UPDATE but not returning rows,
@@ -273,6 +502,7 @@ function toggleAndRepositionTask(tasks, idx) {
   let isAuthed = false;
   /** Empty-area click right after editing: save only, do not open a new draft row. */
   let suppressGeneralEmptyClickNewTask = false;
+  const generalDropIndicator = createTaskDropIndicator(tasksField, tasksFieldRoot);
 
   function createTask(text = "", checked = false, dbId = null, subtask = false) {
     const id = `task-${state.nextId++}`;
@@ -557,7 +787,6 @@ function toggleAndRepositionTask(tasks, idx) {
         task.subtask ? " task-row-sub" : ""
       }`;
       row.dataset.id = taskId;
-      row.draggable = isAuthed;
 
       const checkbox = document.createElement("button");
       checkbox.type = "button";
@@ -581,10 +810,21 @@ function toggleAndRepositionTask(tasks, idx) {
       deleteBtn.className = "task-delete";
       deleteBtn.setAttribute("aria-label", "Delete task");
 
+      const dragHandle = createTaskDragHandle();
+
+      const main = document.createElement("div");
+      main.className = "task-main";
+      main.appendChild(input);
+
+      const actions = document.createElement("div");
+      actions.className = "task-row-actions";
+      actions.appendChild(commitBtn);
+      actions.appendChild(deleteBtn);
+      actions.appendChild(dragHandle);
+
       row.appendChild(checkbox);
-      row.appendChild(input);
-      row.appendChild(commitBtn);
-      row.appendChild(deleteBtn);
+      row.appendChild(main);
+      row.appendChild(actions);
       list.appendChild(row);
 
       checkbox.addEventListener("mousedown", (e) => {
@@ -641,30 +881,35 @@ function toggleAndRepositionTask(tasks, idx) {
         true
       );
 
-      row.addEventListener("dragstart", (e) => {
-        if (!isAuthed) return;
-        const input = row.querySelector(".task-text");
-        if (input) {
-          task.text = input.value;
-          markTaskDirty(task);
-          normalizeSubtaskFlags(state.tasks);
+      wireTaskDragHandle(
+        dragHandle,
+        row,
+        isAuthed,
+        (e) => {
+          const input = row.querySelector(".task-text");
+          if (input) {
+            task.text = input.value;
+            markTaskDirty(task);
+            normalizeSubtaskFlags(state.tasks);
+          }
+          state.isDragging = true;
+          state.draggedId = taskId;
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", taskId);
+          const dragPl = buildDragPayload(task);
+          setGlobalDragPayload(dragPl);
+          writeDragPayloadToDataTransfer(e.dataTransfer, dragPl);
+        },
+        () => {
+          state.isDragging = false;
+          state.draggedId = null;
+          clearGlobalDragPayload();
         }
-        state.isDragging = true;
-        state.draggedId = taskId;
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", taskId);
-        const dragPl = buildDragPayload(task);
-        setGlobalDragPayload(dragPl);
-        writeDragPayloadToDataTransfer(e.dataTransfer, dragPl);
-      });
-
-      row.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-      });
+      );
 
       row.addEventListener("drop", (e) => {
         e.preventDefault();
+        hideAllTaskDropIndicators();
         if (!isAuthed) return;
         const crossPayload = readDragPayloadFromEvent(e);
         if (crossPayload && crossPayload.sourceBlock !== GENERAL_BLOCK_ID) return;
@@ -678,9 +923,9 @@ function toggleAndRepositionTask(tasks, idx) {
         const to = getTaskIndex(toId);
         if (from === -1 || to === -1) return;
 
-        const [moved] = state.tasks.splice(from, 1);
-        const adjustedTo = from < to ? to - 1 : to;
-        state.tasks.splice(adjustedTo, 0, moved);
+        const insertBefore = taskRowInsertBefore(e, row);
+        const moved = reorderTaskInArray(state.tasks, from, to, insertBefore);
+        if (!moved) return;
 
         normalizeSubtaskFlags(state.tasks);
         if (moved.dbId && !isTaskEmptyText(moved.text)) {
@@ -694,13 +939,8 @@ function toggleAndRepositionTask(tasks, idx) {
         render();
       });
 
-      row.addEventListener("dragend", () => {
-        state.isDragging = false;
-        state.draggedId = null;
-        clearGlobalDragPayload();
-      });
-
       input.addEventListener("blur", () => {
+        if (state.isDragging || taskDragInteractionActive) return;
         void (async () => {
           await commitTask(taskId);
         })();
@@ -938,9 +1178,30 @@ function toggleAndRepositionTask(tasks, idx) {
   });
 
   tasksField.addEventListener("dragover", (e) => {
-    if (!isAuthed) return;
+    if (!isAuthed || !isActiveTaskDragEvent(e)) return;
+    const list = tasksFieldRoot.querySelector(".tasks-list");
+    if (!list) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
+    const payload = readDragPayloadFromEvent(e);
+    if (payload && payload.sourceBlock !== GENERAL_BLOCK_ID) {
+      generalDropIndicator.showAtEnd(list);
+      return;
+    }
+    updateTaskDropIndicator(
+      tasksField,
+      generalDropIndicator,
+      list,
+      e,
+      state.draggedId,
+      getTaskIndex
+    );
+  });
+
+  tasksField.addEventListener("dragleave", (e) => {
+    const related = e.relatedTarget;
+    if (related && tasksField.contains(related)) return;
+    generalDropIndicator.hide();
   });
 
   tasksField.addEventListener(
@@ -954,6 +1215,7 @@ function toggleAndRepositionTask(tasks, idx) {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+      hideAllTaskDropIndicators();
 
       await flushAllTaskSaves();
 
@@ -1112,6 +1374,7 @@ function toggleAndRepositionTask(tasks, idx) {
     let isAuthed = false;
     /** Empty-area click while a task field was focused: save only, no new draft. */
     let suppressDayEmptyClickNewPlan = false;
+    const dayDropIndicator = createTaskDropIndicator(dayRect, tasksEl);
 
     function createTask(text = "", checked = false, dbId = null, subtask = false) {
       const id = `d-${daySlugForId}-${state.nextId++}`;
@@ -1357,7 +1620,6 @@ function toggleAndRepositionTask(tasks, idx) {
           task.subtask ? " task-row-sub" : ""
         }`;
         row.dataset.id = taskId;
-        row.draggable = isAuthed;
 
         const checkbox = document.createElement("button");
         checkbox.type = "button";
@@ -1385,14 +1647,17 @@ function toggleAndRepositionTask(tasks, idx) {
         deleteBtn.className = "task-delete";
         deleteBtn.setAttribute("aria-label", "Delete task");
 
+        const dragHandle = createTaskDragHandle();
+
         const actions = document.createElement("div");
         actions.className = "task-row-actions";
         actions.appendChild(commitBtn);
         actions.appendChild(deleteBtn);
+        actions.appendChild(dragHandle);
 
-        main.appendChild(actions);
         row.appendChild(checkbox);
         row.appendChild(main);
+        row.appendChild(actions);
         list.appendChild(row);
 
         checkbox.addEventListener("mousedown", (e) => {
@@ -1449,35 +1714,40 @@ function toggleAndRepositionTask(tasks, idx) {
           true
         );
 
-        row.addEventListener("dragstart", (e) => {
-          if (!isAuthed) return;
-          const input = row.querySelector(".task-text");
-          if (input) {
-            let v = moveTimeToStart(input.value);
-            if (v !== input.value) input.value = v;
-            task.text = v;
-            markTaskDirty(task);
+        wireTaskDragHandle(
+          dragHandle,
+          row,
+          isAuthed,
+          (e) => {
+            const input = row.querySelector(".task-text");
+            if (input) {
+              let v = moveTimeToStart(input.value);
+              if (v !== input.value) input.value = v;
+              task.text = v;
+              markTaskDirty(task);
+            }
+            normalizeSubtaskFlags(state.tasks);
+            stabilizeTimeSorted();
+            const payloadTask =
+              state.tasks.find((t) => t.id === taskId) || task;
+            state.isDragging = true;
+            state.draggedId = taskId;
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", taskId);
+            const dragPl = buildDragPayload(payloadTask);
+            setGlobalDragPayload(dragPl);
+            writeDragPayloadToDataTransfer(e.dataTransfer, dragPl);
+          },
+          () => {
+            state.isDragging = false;
+            state.draggedId = null;
+            clearGlobalDragPayload();
           }
-          normalizeSubtaskFlags(state.tasks);
-          stabilizeTimeSorted();
-          const payloadTask =
-            state.tasks.find((t) => t.id === taskId) || task;
-          state.isDragging = true;
-          state.draggedId = taskId;
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", taskId);
-          const dragPl = buildDragPayload(payloadTask);
-          setGlobalDragPayload(dragPl);
-          writeDragPayloadToDataTransfer(e.dataTransfer, dragPl);
-        });
-
-        row.addEventListener("dragover", (e) => {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-        });
+        );
 
         row.addEventListener("drop", (e) => {
           e.preventDefault();
+          hideAllTaskDropIndicators();
           if (!isAuthed) return;
           const crossPayload = readDragPayloadFromEvent(e);
           if (crossPayload && crossPayload.sourceBlock !== blockId) return;
@@ -1491,9 +1761,9 @@ function toggleAndRepositionTask(tasks, idx) {
           const to = getTaskIndex(toId);
           if (from === -1 || to === -1) return;
 
-          const [moved] = state.tasks.splice(from, 1);
-          const adjustedTo = from < to ? to - 1 : to;
-          state.tasks.splice(adjustedTo, 0, moved);
+          const insertBefore = taskRowInsertBefore(e, row);
+          const moved = reorderTaskInArray(state.tasks, from, to, insertBefore);
+          if (!moved) return;
 
           stabilizeTimeSorted();
           normalizeSubtaskFlags(state.tasks);
@@ -1508,13 +1778,8 @@ function toggleAndRepositionTask(tasks, idx) {
           render();
         });
 
-        row.addEventListener("dragend", () => {
-          state.isDragging = false;
-          state.draggedId = null;
-          clearGlobalDragPayload();
-        });
-
         input.addEventListener("blur", () => {
+          if (state.isDragging || taskDragInteractionActive) return;
           void (async () => {
             await commitTask(taskId);
           })();
@@ -1611,7 +1876,12 @@ function toggleAndRepositionTask(tasks, idx) {
           return;
         }
 
-        if (isCommit || isDelete) {
+        const isDragHandle =
+          e.target.classList?.contains("task-drag-handle") ||
+          e.target.classList?.contains("task-drag-handle-icon") ||
+          !!e.target.closest?.(".task-drag-handle");
+
+        if (isCommit || isDelete || isDragHandle) {
           return;
         }
 
@@ -1704,9 +1974,29 @@ function toggleAndRepositionTask(tasks, idx) {
     });
 
     tasksEl.addEventListener("dragover", (e) => {
-      if (!isAuthed) return;
+      if (!isAuthed || !isActiveTaskDragEvent(e)) return;
+      const list = tasksEl.querySelector(".tasks-list");
+      if (!list) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
+      const payload = readDragPayloadFromEvent(e);
+      if (payload && payload.sourceBlock !== blockId) {
+        const rows = list.querySelectorAll(".task-row:not(.task-row-dragging)");
+        const fc = firstCheckedTaskIndex(state.tasks);
+        if (fc === -1 || !rows.length) {
+          dayDropIndicator.showAtEnd(list);
+        } else {
+          dayDropIndicator.showBeforeRow(rows[Math.min(fc, rows.length - 1)]);
+        }
+        return;
+      }
+      updateTaskDropIndicator(tasksEl, dayDropIndicator, list, e, state.draggedId, getTaskIndex);
+    });
+
+    dayRect.addEventListener("dragleave", (e) => {
+      const related = e.relatedTarget;
+      if (related && dayRect.contains(related)) return;
+      dayDropIndicator.hide();
     });
 
     tasksEl.addEventListener(
@@ -1720,6 +2010,7 @@ function toggleAndRepositionTask(tasks, idx) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
+        hideAllTaskDropIndicators();
 
         await flushAllTaskSaves();
 
@@ -1894,6 +2185,7 @@ function toggleAndRepositionTask(tasks, idx) {
       window.__weekOffset = Number(window.__weekOffset || 0) + delta;
       syncWeekAwayClass();
       updateDayOfMonthLabels();
+      updateWeekNavLabel();
       renderWeeksList();
       window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
     })();
@@ -1907,6 +2199,7 @@ function toggleAndRepositionTask(tasks, idx) {
       window.__weekOffset = offset;
       syncWeekAwayClass();
       updateDayOfMonthLabels();
+      updateWeekNavLabel();
       renderWeeksList();
       window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
     })();
@@ -1923,6 +2216,22 @@ function toggleAndRepositionTask(tasks, idx) {
     const d2 = sun.getDate();
     const m2 = MONTH_NAMES[sun.getMonth()];
     return `${d1}${m1} — ${d2}${m2}`;
+  }
+
+  function getWeekNavLabel(offset) {
+    if (offset === 0) return "this week";
+    if (offset === 1) return "next week";
+    if (offset === -1) return "last week";
+    return formatWeekLabel(getWeekMondayStart(new Date(), offset));
+  }
+
+  const weekNavLabel = document.getElementById("week-nav-label");
+  const weekGoThisWeekBtn = document.getElementById("week-go-this-week");
+
+  function updateWeekNavLabel() {
+    const offset = Number(window.__weekOffset || 0);
+    if (weekNavLabel) weekNavLabel.textContent = getWeekNavLabel(offset);
+    if (weekGoThisWeekBtn) weekGoThisWeekBtn.hidden = offset === 0;
   }
 
   const PAST_WEEKS_COUNT = 12;
@@ -1953,8 +2262,12 @@ function toggleAndRepositionTask(tasks, idx) {
   const nextBtn = document.getElementById("week-next");
   if (prevBtn) prevBtn.addEventListener("click", () => shiftWeek(-1));
   if (nextBtn) nextBtn.addEventListener("click", () => shiftWeek(1));
+  if (weekGoThisWeekBtn) {
+    weekGoThisWeekBtn.addEventListener("click", () => setWeekOffset(0));
+  }
 
   syncWeekAwayClass();
+  updateWeekNavLabel();
   scheduleNextUpdate();
   renderWeeksList();
 })();
@@ -2091,32 +2404,60 @@ window.addEventListener("load", () => {
 
   const themeInputText = document.getElementById("theme-color-text");
   const themeInputBg = document.getElementById("theme-color-background");
+  const themeFontSelect = document.getElementById("theme-font");
   const themeApplyBtn = document.getElementById("theme-apply");
   const themeSelect = document.getElementById("theme-select");
   const themeCustomFields = document.getElementById("theme-custom-fields");
   const themeDeleteBtn = document.getElementById("theme-delete");
+  const themeCustomName = document.getElementById("theme-custom-name");
 
   const THEME_PRESETS = {
     light: { text: "#000000", bg: "#ffffff", label: "Light" },
     dark: { text: "#ffffff", bg: "#000000", label: "Dark" },
   };
-  const THEME_SELECTED_KEY = "oneweek-theme-selected";
-  const THEME_CUSTOM_TEXT_KEY = "oneweek-custom-text";
-  const THEME_CUSTOM_BG_KEY = "oneweek-custom-bg";
-  const THEME_CUSTOM_NAME_KEY = "oneweek-custom-name";
+  let editingCustomThemeId = null;
 
-  function getCustomTheme() {
+  function themeApi() {
+    return window.oneweekTheme;
+  }
+
+  function getSelectedThemeKey() {
+    const tw = themeApi();
+    const storageKey = tw?.THEME_SELECTED_KEY || "oneweek-theme-selected";
     try {
-      const t = localStorage.getItem(THEME_CUSTOM_TEXT_KEY);
-      const b = localStorage.getItem(THEME_CUSTOM_BG_KEY);
-      const name = localStorage.getItem(THEME_CUSTOM_NAME_KEY) || "";
-      if (t && b) return { text: t, bg: b, name };
+      return localStorage.getItem(storageKey) || "light";
+    } catch (_) {
+      return "light";
+    }
+  }
+
+  function setSelectedThemeKey(key) {
+    const tw = themeApi();
+    const storageKey = tw?.THEME_SELECTED_KEY || "oneweek-theme-selected";
+    try {
+      localStorage.setItem(storageKey, key);
     } catch (_) {}
-    return null;
+  }
+
+  function customThemeLabel(theme) {
+    return theme.name || `Custom (${theme.text} / ${theme.bg})`;
+  }
+
+  function buildThemeFontOptions() {
+    const tw = window.oneweekTheme;
+    if (!themeFontSelect || !tw?.GOOGLE_FONTS) return;
+    themeFontSelect.innerHTML = "";
+    for (const font of tw.GOOGLE_FONTS) {
+      const opt = document.createElement("option");
+      opt.value = font.id;
+      opt.textContent = font.label;
+      themeFontSelect.appendChild(opt);
+    }
   }
 
   function buildThemeOptions() {
     if (!themeSelect) return;
+    const tw = themeApi();
     themeSelect.innerHTML = "";
     for (const [key, preset] of Object.entries(THEME_PRESETS)) {
       const opt = document.createElement("option");
@@ -2124,11 +2465,11 @@ window.addEventListener("load", () => {
       opt.textContent = preset.label;
       themeSelect.appendChild(opt);
     }
-    const custom = getCustomTheme();
-    if (custom) {
+    const customs = tw ? tw.getCustomThemes() : [];
+    for (const theme of customs) {
       const opt = document.createElement("option");
-      opt.value = "custom";
-      opt.textContent = custom.name || `Custom (${custom.text} / ${custom.bg})`;
+      opt.value = tw.customThemeSelectKey(theme.id);
+      opt.textContent = customThemeLabel(theme);
       themeSelect.appendChild(opt);
     }
     const ownOpt = document.createElement("option");
@@ -2137,42 +2478,128 @@ window.addEventListener("load", () => {
     themeSelect.appendChild(ownOpt);
   }
 
-  function getSelectedThemeKey() {
-    try { return localStorage.getItem(THEME_SELECTED_KEY) || "light"; } catch (_) { return "light"; }
+  const themeDeleteActions = themeDeleteBtn
+    ? themeDeleteBtn.closest(".sidebar-actions")
+    : null;
+
+  function updateThemeDeleteVisibility(key) {
+    const tw = themeApi();
+    const resolvedKey = themeSelect?.value || key;
+    const show =
+      !!tw &&
+      tw.isCustomThemeKey(resolvedKey) &&
+      !!tw.findCustomTheme(tw.customThemeIdFromKey(resolvedKey));
+    if (themeDeleteBtn) themeDeleteBtn.hidden = !show;
+    if (themeDeleteActions) themeDeleteActions.hidden = !show;
   }
 
   function applyThemeByKey(key) {
-    const tw = window.oneweekTheme;
+    const tw = themeApi();
     if (!tw) return;
-    if (key === "custom") {
-      const custom = getCustomTheme();
-      if (custom) {
-        tw.persistTheme(custom.text, custom.bg);
-        tw.applyThemeToDocument(custom.text, custom.bg);
+    if (tw.isCustomThemeKey(key)) {
+      const theme = tw.findCustomTheme(tw.customThemeIdFromKey(key));
+      if (theme) {
+        tw.persistTheme(theme.text, theme.bg);
+        tw.applyThemeToDocument(theme.text, theme.bg, theme.fontId || "");
       }
     } else if (THEME_PRESETS[key]) {
       const p = THEME_PRESETS[key];
       tw.persistTheme(p.text, p.bg);
-      tw.applyThemeToDocument(p.text, p.bg);
+      tw.applyThemeToDocument(p.text, p.bg, "");
     }
-    try { localStorage.setItem(THEME_SELECTED_KEY, key); } catch (_) {}
+    setSelectedThemeKey(key);
+  }
+
+  function fillThemeFormFromTheme(theme) {
+    const tw = themeApi();
+    if (!tw || !themeInputText || !themeInputBg) return;
+    themeInputText.value = theme.text;
+    themeInputBg.value = theme.bg;
+    if (themeCustomName) themeCustomName.value = theme.name || "";
+    if (themeFontSelect) themeFontSelect.value = theme.fontId || "";
+    tw.applyThemeToDocument(theme.text, theme.bg, theme.fontId || "");
+  }
+
+  function fillThemeFormForOwnMode(previousKey) {
+    const tw = themeApi();
+    if (!tw) return;
+    let resolvedKey = previousKey;
+    if (resolvedKey === "custom") {
+      const themes = tw.getCustomThemes();
+      if (themes.length > 0) {
+        const pick = themes.find((t) => t.id === "migrated") || themes[0];
+        resolvedKey = tw.customThemeSelectKey(pick.id);
+      }
+    }
+    if (tw.isCustomThemeKey(resolvedKey)) {
+      const id = tw.customThemeIdFromKey(resolvedKey);
+      const theme = tw.findCustomTheme(id);
+      if (theme) {
+        editingCustomThemeId = id;
+        fillThemeFormFromTheme(theme);
+        return;
+      }
+    }
+    editingCustomThemeId = null;
+    if (themeCustomName) themeCustomName.value = "";
+    syncThemeInputs();
   }
 
   function syncThemeInputs() {
-    const tw = window.oneweekTheme;
+    const tw = themeApi();
     if (!tw || !themeInputText || !themeInputBg) return;
-    themeInputText.value = tw.getCurrentHexForInput("--color-text", tw.THEME_STORAGE_TEXT, tw.DEFAULT_TEXT);
-    themeInputBg.value = tw.getCurrentHexForInput("--color-background", tw.THEME_STORAGE_BG, tw.DEFAULT_BG);
+    themeInputText.value = tw.getCurrentHexForInput(
+      "--color-text",
+      tw.THEME_STORAGE_TEXT,
+      tw.DEFAULT_TEXT
+    );
+    themeInputBg.value = tw.getCurrentHexForInput(
+      "--color-background",
+      tw.THEME_STORAGE_BG,
+      tw.DEFAULT_BG
+    );
+    if (themeFontSelect) {
+      themeFontSelect.value = tw.getStoredCustomFontId();
+    }
+  }
+
+  function resolveThemeKey(key) {
+    const tw = themeApi();
+    if (key === "own") return "own";
+    if (THEME_PRESETS[key]) return key;
+    if (tw && key === "custom") {
+      const themes = tw.getCustomThemes();
+      if (themes.length > 0) {
+        const pick = themes.find((t) => t.id === "migrated") || themes[0];
+        return tw.customThemeSelectKey(pick.id);
+      }
+    }
+    if (tw && tw.isCustomThemeKey(key)) {
+      const theme = tw.findCustomTheme(tw.customThemeIdFromKey(key));
+      if (theme) return key;
+    }
+    return "light";
   }
 
   function syncThemeSelect() {
     if (!themeSelect) return;
-    const key = getSelectedThemeKey();
+    const tw = themeApi();
+    let key = resolveThemeKey(getSelectedThemeKey());
+    if (key === "light" && getSelectedThemeKey() !== "light") {
+      setSelectedThemeKey("light");
+    }
     buildThemeOptions();
     themeSelect.value = key;
-    if (themeCustomFields) themeCustomFields.hidden = (key !== "own");
-    if (themeDeleteBtn) themeDeleteBtn.hidden = (key !== "custom");
-    syncThemeInputs();
+    if (!themeSelect.value) {
+      key = "light";
+      themeSelect.value = key;
+      setSelectedThemeKey(key);
+    }
+    if (themeCustomFields) themeCustomFields.hidden = key !== "own";
+    if (key !== "own") editingCustomThemeId = null;
+    updateThemeDeleteVisibility(themeSelect.value || key);
+    if (key === "own") fillThemeFormForOwnMode(getSelectedThemeKey());
+    else syncThemeInputs();
   }
 
   const sidebar = document.getElementById("sidebar");
@@ -2228,35 +2655,36 @@ window.addEventListener("load", () => {
       const key = themeSelect.value;
       if (key === "own") {
         if (themeCustomFields) themeCustomFields.hidden = false;
-        if (themeDeleteBtn) themeDeleteBtn.hidden = true;
-        syncThemeInputs();
-        try { localStorage.setItem(THEME_SELECTED_KEY, "own"); } catch (_) {}
+        fillThemeFormForOwnMode(getSelectedThemeKey());
+        updateThemeDeleteVisibility(key);
+        setSelectedThemeKey("own");
         return;
       }
+      editingCustomThemeId = null;
       if (themeCustomFields) themeCustomFields.hidden = true;
-      if (themeDeleteBtn) themeDeleteBtn.hidden = (key !== "custom");
+      updateThemeDeleteVisibility(key);
       applyThemeByKey(key);
     });
   }
-
-  const themeCustomName = document.getElementById("theme-custom-name");
 
   function previewCustomTheme() {
     const tw = window.oneweekTheme;
     if (!tw || !themeInputText || !themeInputBg) return;
     const nt = tw.normalizeHexColor(themeInputText.value);
     const nb = tw.normalizeHexColor(themeInputBg.value);
+    const fontId = themeFontSelect ? themeFontSelect.value : "";
     if (nt && nb) {
-      tw.applyThemeToDocument(nt, nb);
+      tw.applyThemeToDocument(nt, nb, fontId);
     }
   }
 
   if (themeInputText) themeInputText.addEventListener("input", previewCustomTheme);
   if (themeInputBg) themeInputBg.addEventListener("input", previewCustomTheme);
+  if (themeFontSelect) themeFontSelect.addEventListener("change", previewCustomTheme);
 
   if (themeApplyBtn) {
     themeApplyBtn.addEventListener("click", () => {
-      const tw = window.oneweekTheme;
+      const tw = themeApi();
       if (!tw || !themeInputText || !themeInputBg) return;
       const nt = tw.normalizeHexColor(themeInputText.value);
       const nb = tw.normalizeHexColor(themeInputBg.value);
@@ -2265,33 +2693,50 @@ window.addEventListener("load", () => {
         return;
       }
       const name = (themeCustomName ? themeCustomName.value.trim() : "") || "";
-      try {
-        localStorage.setItem(THEME_CUSTOM_TEXT_KEY, nt);
-        localStorage.setItem(THEME_CUSTOM_BG_KEY, nb);
-        localStorage.setItem(THEME_CUSTOM_NAME_KEY, name);
-        localStorage.setItem(THEME_SELECTED_KEY, "custom");
-      } catch (_) {}
+      const fontId = themeFontSelect ? themeFontSelect.value : "";
+      const id = editingCustomThemeId || tw.generateThemeId();
+      const existing = tw.findCustomTheme(id);
+      const saved = { id, name, text: nt, bg: nb, fontId };
+      const themes = tw
+        .getCustomThemes()
+        .filter((t) => t.id !== id)
+        .concat(saved);
+      tw.saveCustomThemes(themes);
+      const selectKey = tw.customThemeSelectKey(id);
       tw.persistTheme(nt, nb);
-      tw.applyThemeToDocument(nt, nb);
+      tw.applyThemeToDocument(nt, nb, fontId);
+      try {
+        localStorage.setItem(tw.THEME_CUSTOM_FONT_KEY, fontId);
+      } catch (_) {}
+      setSelectedThemeKey(selectKey);
+      editingCustomThemeId = null;
       buildThemeOptions();
-      themeSelect.value = "custom";
+      themeSelect.value = selectKey;
       if (themeCustomFields) themeCustomFields.hidden = true;
-      setAuthMessage("Custom theme saved.", false);
+      updateThemeDeleteVisibility(selectKey);
+      setAuthMessage(
+        existing ? "Custom theme updated." : "Custom theme saved.",
+        false
+      );
     });
   }
 
   if (themeDeleteBtn) {
     themeDeleteBtn.addEventListener("click", () => {
-      try {
-        localStorage.removeItem(THEME_CUSTOM_TEXT_KEY);
-        localStorage.removeItem(THEME_CUSTOM_BG_KEY);
-        localStorage.removeItem(THEME_CUSTOM_NAME_KEY);
-      } catch (_) {}
+      const tw = themeApi();
+      if (!tw || !themeSelect) return;
+      const key = themeSelect.value;
+      if (!tw.isCustomThemeKey(key)) return;
+      const id = tw.customThemeIdFromKey(key);
+      tw.saveCustomThemes(tw.getCustomThemes().filter((t) => t.id !== id));
+      editingCustomThemeId = null;
       applyThemeByKey("light");
       syncThemeSelect();
+      setAuthMessage("Custom theme deleted.", false);
     });
   }
 
+  buildThemeFontOptions();
   syncThemeSelect();
 });
 
