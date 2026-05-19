@@ -8,14 +8,14 @@
       "hero.title": "Oneweek a planner<br> for a world in flux",
       "what.heading": "What it is",
       "what.body":
-        "One week on screen — everything important in view. Plan for the week you're living in now, without noise from far-off deadlines and endless lists.",
+        "One week on a screen — everything important in view. Plan for the week you're living in now, without noise from far-off deadlines and endless lists.",
       "features.heading": "Features",
       "features.1":
         "<strong>Custom themes</strong> — your own text color, background, and font for the mood or task at hand.",
       "features.2":
         "<strong>Time-anchored tasks</strong> — pin something to a moment during the week so it doesn't get lost in the flow.",
       "features.3":
-        "<strong>Shared task inbox</strong> — tasks without a specific day that you can drag into any day when the time comes.",
+        "<strong>Shared task inbox</strong> — tasks without a specific day that you can drag into any date when the time comes.",
       "features.4":
         "<strong>Color coding</strong> — highlight what matters most so it stands out at a glance.",
       "free.heading": "Free, period",
