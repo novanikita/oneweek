@@ -78,6 +78,26 @@ function markTaskDirty(task) {
   if (task) task._dirty = true;
 }
 
+function syncTaskRowMultiline(input) {
+  const row = input?.closest?.(".task-row");
+  if (!row || !input) return;
+  const style = getComputedStyle(input);
+  const lineHeight = parseFloat(style.lineHeight) || 18;
+  const paddingTop = parseFloat(style.paddingTop) || 0;
+  const paddingBottom = parseFloat(style.paddingBottom) || 0;
+  const oneLineHeight = lineHeight + paddingTop + paddingBottom;
+  const multiline = input.scrollHeight > oneLineHeight + 1;
+  row.classList.toggle("task-row-multiline", multiline);
+}
+
+function autoSizeTextarea(el) {
+  if (!el) return;
+  el.style.height = "0";
+  const safeHeight = Math.max(el.scrollHeight, 18);
+  el.style.height = `${safeHeight}px`;
+  syncTaskRowMultiline(el);
+}
+
 const taskSaveFlushes = [];
 
 function registerTaskSaveFlush(flushFn) {
@@ -536,16 +556,8 @@ function toggleAndRepositionTask(tasks, idx) {
     return state.tasks.findIndex((t) => t.id === id);
   }
 
-  function autoSizeTextarea(el) {
-    if (!el) return;
-    el.style.height = "auto";
-    const safeHeight = Math.max(el.scrollHeight || 0, 18);
-    el.style.height = `${safeHeight}px`;
-  }
-
   function setTasksInteractivity(enabled) {
-    tasksField.style.pointerEvents = enabled ? "auto" : "none";
-    tasksFieldRoot.style.pointerEvents = enabled ? "auto" : "none";
+    tasksField.classList.toggle("tasks-field--guest", !enabled);
     document.querySelectorAll(".day-rect").forEach((el) => {
       el.style.pointerEvents = enabled ? "auto" : "none";
     });
@@ -681,10 +693,6 @@ function toggleAndRepositionTask(tasks, idx) {
     }));
     normalizeSubtaskFlags(state.tasks);
     state.tasks = partitionUncheckedBeforeChecked(state.tasks);
-
-    if (state.tasks.length === 0) {
-      state.tasks = [createTask("", false, null)];
-    }
   }
 
   async function handleSession(session) {
@@ -696,7 +704,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     if (!hasUser) {
       state.tasks = [];
-      tasksFieldRoot.innerHTML = "";
+      renderGuestPrompt();
       return;
     }
 
@@ -725,7 +733,6 @@ function toggleAndRepositionTask(tasks, idx) {
     if (task.dbId) void deleteTaskFromDb(task);
     state.focusAfterRender = null;
     state.tasks.splice(idx, 1);
-    if (state.tasks.length === 0) state.tasks = [createTask("", false, null)];
     render();
   }
 
@@ -743,7 +750,6 @@ function toggleAndRepositionTask(tasks, idx) {
       if (task.dbId) void deleteTaskFromDb(task);
       state.focusAfterRender = null;
       state.tasks.splice(idx, 1);
-      if (state.tasks.length === 0) state.tasks = [createTask("", false, null)];
       return { needRender: true };
     }
     // Do not await: UI would freeze for one network round-trip per blur/commit.
@@ -774,7 +780,46 @@ function toggleAndRepositionTask(tasks, idx) {
     }
   }
 
+  function renderGuestPrompt() {
+    tasksFieldRoot.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "tasks-guest-prompt";
+
+    const message = document.createElement("p");
+    message.className = "tasks-guest-message";
+    message.textContent = "Чтобы начать надо зарегистрироваться";
+
+    const actions = document.createElement("div");
+    actions.className = "tasks-guest-actions";
+
+    const signInBtn = document.createElement("button");
+    signInBtn.type = "button";
+    signInBtn.className = "tasks-guest-btn";
+    signInBtn.textContent = "Sign in";
+
+    const logInBtn = document.createElement("button");
+    logInBtn.type = "button";
+    logInBtn.className = "tasks-guest-btn";
+    logInBtn.textContent = "Log in";
+
+    const openAuth = () => window.oneweekOpenAuth?.();
+    signInBtn.addEventListener("click", openAuth);
+    logInBtn.addEventListener("click", openAuth);
+
+    actions.appendChild(signInBtn);
+    actions.appendChild(logInBtn);
+    wrap.appendChild(message);
+    wrap.appendChild(actions);
+    tasksFieldRoot.appendChild(wrap);
+  }
+
   function render() {
+    if (!isAuthed) {
+      renderGuestPrompt();
+      return;
+    }
+
     tasksFieldRoot.innerHTML = "";
 
     const list = document.createElement("div");
@@ -799,6 +844,7 @@ function toggleAndRepositionTask(tasks, idx) {
       input.value = task.text;
       input.autocomplete = "off";
       autoSizeTextarea(input);
+      input.addEventListener("focus", () => autoSizeTextarea(input));
 
       const commitBtn = document.createElement("button");
       commitBtn.type = "button";
@@ -1278,7 +1324,6 @@ function toggleAndRepositionTask(tasks, idx) {
     const idx = getTaskIndex(detail.sourceLocalId);
     if (idx === -1) return;
     state.tasks.splice(idx, 1);
-    if (state.tasks.length === 0) state.tasks = [createTask("", false, null)];
     render();
   });
 
@@ -1406,13 +1451,6 @@ function toggleAndRepositionTask(tasks, idx) {
 
     function getTaskIndex(id) {
       return state.tasks.findIndex((t) => t.id === id);
-    }
-
-    function autoSizeTextarea(el) {
-      if (!el) return;
-      el.style.height = "auto";
-      const safeHeight = Math.max(el.scrollHeight || 0, 18);
-      el.style.height = `${safeHeight}px`;
     }
 
     async function deleteTaskFromDb(task) {
@@ -1632,6 +1670,7 @@ function toggleAndRepositionTask(tasks, idx) {
         input.value = task.text;
         input.autocomplete = "off";
         autoSizeTextarea(input);
+        input.addEventListener("focus", () => autoSizeTextarea(input));
 
         const main = document.createElement("div");
         main.className = "task-main";
@@ -2411,11 +2450,11 @@ window.addEventListener("load", () => {
   const themeDeleteBtn = document.getElementById("theme-delete");
   const themeCustomName = document.getElementById("theme-custom-name");
 
-  const THEME_PRESETS = {
-    light: { text: "#000000", bg: "#ffffff", label: "Light" },
-    dark: { text: "#ffffff", bg: "#000000", label: "Dark" },
-  };
   let editingCustomThemeId = null;
+
+  function getThemePresets() {
+    return themeApi()?.PRESETS || {};
+  }
 
   function themeApi() {
     return window.oneweekTheme;
@@ -2425,9 +2464,11 @@ window.addEventListener("load", () => {
     const tw = themeApi();
     const storageKey = tw?.THEME_SELECTED_KEY || "oneweek-theme-selected";
     try {
-      return localStorage.getItem(storageKey) || "light";
+      const raw = localStorage.getItem(storageKey) || "white";
+      const tw = themeApi();
+      return tw?.migrateThemeKey?.(raw) ?? raw;
     } catch (_) {
-      return "light";
+      return "white";
     }
   }
 
@@ -2459,10 +2500,10 @@ window.addEventListener("load", () => {
     if (!themeSelect) return;
     const tw = themeApi();
     themeSelect.innerHTML = "";
-    for (const [key, preset] of Object.entries(THEME_PRESETS)) {
+    for (const [key, preset] of Object.entries(getThemePresets())) {
       const opt = document.createElement("option");
       opt.value = key;
-      opt.textContent = preset.label;
+      opt.textContent = preset.label || key;
       themeSelect.appendChild(opt);
     }
     const customs = tw ? tw.getCustomThemes() : [];
@@ -2502,10 +2543,12 @@ window.addEventListener("load", () => {
         tw.persistTheme(theme.text, theme.bg);
         tw.applyThemeToDocument(theme.text, theme.bg, theme.fontId || "");
       }
-    } else if (THEME_PRESETS[key]) {
-      const p = THEME_PRESETS[key];
-      tw.persistTheme(p.text, p.bg);
-      tw.applyThemeToDocument(p.text, p.bg, "");
+    } else {
+      const p = getThemePresets()[key];
+      if (p) {
+        tw.persistTheme(p.text, p.bg);
+        tw.applyThemeToDocument(p.text, p.bg, "");
+      }
     }
     setSelectedThemeKey(key);
   }
@@ -2565,8 +2608,9 @@ window.addEventListener("load", () => {
 
   function resolveThemeKey(key) {
     const tw = themeApi();
+    key = tw?.migrateThemeKey?.(key) ?? key;
     if (key === "own") return "own";
-    if (THEME_PRESETS[key]) return key;
+    if (getThemePresets()[key]) return key;
     if (tw && key === "custom") {
       const themes = tw.getCustomThemes();
       if (themes.length > 0) {
@@ -2578,20 +2622,21 @@ window.addEventListener("load", () => {
       const theme = tw.findCustomTheme(tw.customThemeIdFromKey(key));
       if (theme) return key;
     }
-    return "light";
+    return "white";
   }
 
   function syncThemeSelect() {
     if (!themeSelect) return;
     const tw = themeApi();
     let key = resolveThemeKey(getSelectedThemeKey());
-    if (key === "light" && getSelectedThemeKey() !== "light") {
-      setSelectedThemeKey("light");
+    const stored = getSelectedThemeKey();
+    if (key !== stored) {
+      setSelectedThemeKey(key);
     }
     buildThemeOptions();
     themeSelect.value = key;
     if (!themeSelect.value) {
-      key = "light";
+      key = "white";
       themeSelect.value = key;
       setSelectedThemeKey(key);
     }
@@ -2612,6 +2657,8 @@ window.addEventListener("load", () => {
     syncThemeSelect();
     void refreshAuthStatus();
   }
+
+  window.oneweekOpenAuth = openAuthPopup;
 
   function closeAuthPopup() {
     if (!overlay || !sidebar) return;
@@ -2730,7 +2777,7 @@ window.addEventListener("load", () => {
       const id = tw.customThemeIdFromKey(key);
       tw.saveCustomThemes(tw.getCustomThemes().filter((t) => t.id !== id));
       editingCustomThemeId = null;
-      applyThemeByKey("light");
+      applyThemeByKey("white");
       syncThemeSelect();
       setAuthMessage("Custom theme deleted.", false);
     });

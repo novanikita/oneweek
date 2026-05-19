@@ -115,14 +115,21 @@
 
     <div class="sidebar-overlay" id="auth-overlay" hidden></div>
     <nav class="sidebar" id="sidebar" aria-label="Menu" hidden>
-      <button type="button" class="sidebar-close" id="auth-close" aria-label="Close">×</button>
       <div class="sidebar-content">
+        <div class="sidebar-header">
+          <h2 class="sidebar-title">Settings</h2>
+          <button type="button" class="sidebar-close" id="auth-close" aria-label="Close">
+            <span class="icon-themed icon-themed-close" aria-hidden="true"></span>
+          </button>
+        </div>
         <div class="sidebar-scroll">
         <p id="auth-message" class="auth-message" aria-live="polite"></p>
 
         <div class="sidebar-section">
           <p class="sidebar-section-title">Themes</p>
-          <select id="theme-select" class="sidebar-select"></select>
+          <div class="sidebar-select-wrap">
+            <select id="theme-select" class="sidebar-select"></select>
+          </div>
           <div class="sidebar-actions" id="theme-delete-actions" hidden>
             <button type="button" id="theme-delete" hidden>Delete theme</button>
           </div>
@@ -157,7 +164,9 @@
               placeholder="#ffffff"
             />
             <label class="sidebar-label" for="theme-font">Font</label>
-            <select id="theme-font" class="sidebar-select"></select>
+            <div class="sidebar-select-wrap">
+              <select id="theme-font" class="sidebar-select"></select>
+            </div>
             <div class="sidebar-actions">
               <button type="button" id="theme-apply">Save</button>
             </div>
@@ -167,7 +176,9 @@
         <div class="sidebar-section sidebar-section-weeks">
           <p class="sidebar-section-title">Weeks</p>
           <div class="weeks-list-scroll">
-            <ul id="weeks-list" class="weeks-list"></ul>
+            <div class="weeks-list-viewport">
+              <ul id="weeks-list" class="weeks-list"></ul>
+            </div>
           </div>
         </div>
         </div>
@@ -187,6 +198,9 @@
               <button type="button" id="logout-button">Logout</button>
             </div>
           </div>
+          <p class="sidebar-about">
+            <a href="./about.html" class="sidebar-about-link">About oneweek</a>
+          </p>
         </div>
       </div>
     </nav>

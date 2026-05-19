@@ -97,9 +97,42 @@
   }
 
   const PRESETS = {
-    light: { text: "#000000", bg: "#ffffff" },
-    dark: { text: "#ffffff", bg: "#000000" },
+    white: {
+      text: "#000000",
+      bg: "#ffffff",
+      label: "White",
+    },
+    black: {
+      text: "#ffffff",
+      bg: "#000000",
+      label: "Black",
+    },
+    "native-light": {
+      text: "#3a3f48",
+      bg: "#eceef2",
+      label: "Native light",
+    },
+    "native-dark": {
+      text: "#e2e5ea",
+      bg: "#2b3038",
+      label: "Native dark",
+    },
+    pickmi: {
+      text: "#6b2438",
+      bg: "#f9e6ef",
+      label: "Pickmi",
+    },
   };
+
+  const LEGACY_THEME_KEYS = {
+    light: "white",
+    dark: "black",
+    "true-pickmi": "pickmi",
+  };
+
+  function migrateThemeKey(key) {
+    return LEGACY_THEME_KEYS[key] || key;
+  }
 
   function normalizeThemeEntry(raw) {
     if (!raw || typeof raw !== "object") return null;
@@ -198,7 +231,12 @@
   function initThemeFromStorage() {
     try {
       migrateLegacyCustomThemes();
-      let selected = localStorage.getItem(THEME_SELECTED_KEY) || "light";
+      let selected = migrateThemeKey(
+        localStorage.getItem(THEME_SELECTED_KEY) || "white"
+      );
+      if (selected !== localStorage.getItem(THEME_SELECTED_KEY)) {
+        localStorage.setItem(THEME_SELECTED_KEY, selected);
+      }
 
       if (selected === "custom") {
         const ct = localStorage.getItem(LEGACY_CUSTOM_TEXT_KEY);
@@ -211,7 +249,7 @@
           );
           return;
         }
-        selected = "light";
+        selected = "white";
       }
 
       if (isCustomThemeKey(selected)) {
@@ -221,8 +259,8 @@
           applyThemeToDocument(theme.text, theme.bg, theme.fontId || "");
           return;
         }
-        localStorage.setItem(THEME_SELECTED_KEY, "light");
-        selected = "light";
+        localStorage.setItem(THEME_SELECTED_KEY, "white");
+        selected = "white";
       }
 
       if (PRESETS[selected]) {
@@ -294,6 +332,8 @@
     DEFAULT_BG,
     DEFAULT_FONT_STACK,
     GOOGLE_FONTS,
+    PRESETS,
+    migrateThemeKey,
     normalizeHexColor,
     applyThemeToDocument,
     applyFontById,

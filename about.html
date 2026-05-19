@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-i18n="meta.title">About oneweek</title>
+    <link rel="icon" href="./oneweek-favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./css/colors.css" />
+    <link rel="stylesheet" href="./css/about.css" />
+    <script src="./js/theme-init.js"></script>
+  </head>
+  <body>
+    <header class="about-site-header">
+      <div class="about-site-header-inner">
+        <a class="about-brand" href="./about.html">
+          <svg class="about-brand-icon" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="5" y="5" width="22" height="22" rx="2" fill="var(--color-text)" />
+            <path
+              d="M10 16L14 20L22 12"
+              fill="none"
+              stroke="var(--color-background)"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span class="about-brand-name">oneweek</span>
+        </a>
+
+        <div class="about-lang-switch" role="group" aria-label="Language">
+          <button type="button" class="about-lang-btn is-active" data-lang="en" aria-pressed="true">
+            EN
+          </button>
+          <span class="about-lang-sep" aria-hidden="true">/</span>
+          <button type="button" class="about-lang-btn" data-lang="ru" aria-pressed="false">RU</button>
+        </div>
+
+        <a class="about-nav-cta" href="./index.html" data-i18n="nav.try">Try now</a>
+      </div>
+    </header>
+
+    <main class="about">
+      <header class="about-hero">
+        <h1 class="about-title" data-i18n-html="hero.title">
+          Oneweek a planner<br />
+          for a world in flux
+        </h1>
+      </header>
+
+      <section class="about-section" aria-labelledby="about-what">
+        <h2 id="about-what" class="about-heading" data-i18n="what.heading">What it is</h2>
+        <p class="about-note" data-i18n="what.body">
+          One week on screen — everything important in view. Plan for the week you're living in now,
+          without noise from far-off deadlines and endless lists.
+        </p>
+      </section>
+
+      <section class="about-section" aria-labelledby="about-features">
+        <h2 id="about-features" class="about-heading" data-i18n="features.heading">Features</h2>
+        <ul class="about-list">
+          <li data-i18n-html="features.1">
+            <strong>Custom themes</strong> — your own text color, background, and font for the mood or
+            task at hand.
+          </li>
+          <li data-i18n-html="features.2">
+            <strong>Time-anchored tasks</strong> — pin something to a moment during the week so it
+            doesn't get lost in the flow.
+          </li>
+          <li data-i18n-html="features.3">
+            <strong>Shared task inbox</strong> — tasks without a specific day that you can drag into
+            any day when the time comes.
+          </li>
+          <li data-i18n-html="features.4">
+            <strong>Color coding</strong> — highlight what matters most so it stands out at a glance.
+          </li>
+        </ul>
+      </section>
+
+      <section class="about-section" aria-labelledby="about-free">
+        <h2 id="about-free" class="about-heading" data-i18n="free.heading">Free, period</h2>
+        <ul class="about-list">
+          <li data-i18n="free.1">No ads — ever.</li>
+          <li data-i18n="free.2">
+            Every feature that exists today and everything we add later stays free for everyone.
+          </li>
+          <li data-i18n="free.3">No spam or newsletters — your email is only for signing in and saving your tasks.</li>
+        </ul>
+      </section>
+
+      <div class="about-cta-wrap">
+        <a class="about-cta" href="./index.html" data-i18n="cta.try">Try now</a>
+      </div>
+
+      <section class="about-section about-section-reviews" aria-labelledby="about-reviews">
+        <h2 id="about-reviews" class="about-heading" data-i18n="reviews.heading">User feedback board</h2>
+        <p class="about-note" data-i18n="reviews.body">
+          Reviews here aren't moderated: I don't delete negative ones or make up positive ones. Anyone
+          who used oneweek for more than a week can leave a review.
+        </p>
+      </section>
+
+      <footer class="about-footer">
+        <p class="about-credit">
+          oneweek by <a href="https://nikitanova.com/en/index.html" target="_blank" rel="noopener">nova</a>
+        </p>
+      </footer>
+    </main>
+
+    <script src="./js/about-i18n.js"></script>
+  </body>
+</html>
