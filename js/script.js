@@ -55,6 +55,7 @@ function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist
       text: String(task.text ?? ""),
       checked: !!task.checked,
       subtask: !!task.subtask,
+      color: normalizeTaskColor(task.color),
     };
     const next = (tail ?? Promise.resolve())
       .then(() => insertOrUpdateTaskInDb(task, snapshot))
@@ -165,6 +166,169 @@ function createTaskDragHandle() {
   icon.setAttribute("aria-hidden", "true");
   handle.appendChild(icon);
   return handle;
+}
+
+/** Palette of pastel highlight colors for tasks. `null` = no color. */
+const TASK_COLOR_PALETTE = [
+  "#ebebeb",
+  "#f0e2d3",
+  "#fbe6cd",
+  "#f8efbf",
+  "#e2ece0",
+  "#dde8f1",
+  "#e7dfee",
+  "#f3d8e1",
+  "#f8dada",
+];
+
+function isValidTaskColor(color) {
+  if (color == null || color === "") return true;
+  return TASK_COLOR_PALETTE.includes(String(color).toLowerCase());
+}
+
+function normalizeTaskColor(color) {
+  if (color == null || color === "") return null;
+  const c = String(color).toLowerCase();
+  return TASK_COLOR_PALETTE.includes(c) ? c : null;
+}
+
+/** Apply / clear the highlight color on a task row element. */
+function applyTaskRowColor(row, color) {
+  if (!row) return;
+  const c = normalizeTaskColor(color);
+  if (c) {
+    row.style.background = c;
+    row.dataset.color = c;
+  } else {
+    row.style.background = "";
+    delete row.dataset.color;
+  }
+}
+
+function createTaskColorButton() {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "task-color";
+  btn.setAttribute("aria-label", "Set task color");
+  const dot = document.createElement("span");
+  dot.className = "task-color-dot";
+  dot.setAttribute("aria-hidden", "true");
+  btn.appendChild(dot);
+  return btn;
+}
+
+function syncTaskColorButton(btn, color) {
+  if (!btn) return;
+  const dot = btn.querySelector(".task-color-dot");
+  if (!dot) return;
+  const c = normalizeTaskColor(color);
+  if (c) {
+    dot.style.background = c;
+    dot.dataset.filled = "1";
+  } else {
+    dot.style.background = "";
+    delete dot.dataset.filled;
+  }
+}
+
+let activeColorPicker = null;
+
+function closeTaskColorPicker(restoreFocus = false) {
+  if (!activeColorPicker) return;
+  const { el, onOutside, onKey, onScroll, restoreFocusInput, rowEl } = activeColorPicker;
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+  document.removeEventListener("mousedown", onOutside, true);
+  document.removeEventListener("keydown", onKey, true);
+  window.removeEventListener("scroll", onScroll, true);
+  window.removeEventListener("resize", onScroll, true);
+  if (rowEl) rowEl.classList.remove("task-row-color-open");
+  activeColorPicker = null;
+  if (restoreFocus && restoreFocusInput?.isConnected) {
+    restoreFocusInput.focus({ preventScroll: true });
+  }
+}
+
+function openTaskColorPicker(anchor, currentColor, onSelect, restoreFocusInput, rowEl) {
+  closeTaskColorPicker(false);
+  if (!anchor) return;
+
+  const pop = document.createElement("div");
+  pop.className = "task-color-popover";
+
+  const grid = document.createElement("div");
+  grid.className = "task-color-grid";
+
+  const current = normalizeTaskColor(currentColor);
+
+  const noneBtn = document.createElement("button");
+  noneBtn.type = "button";
+  noneBtn.className = "task-color-swatch task-color-swatch-none";
+  noneBtn.setAttribute("aria-label", "No color");
+  if (!current) noneBtn.classList.add("task-color-swatch-active");
+  noneBtn.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onSelect(null);
+    closeTaskColorPicker(true);
+  });
+  grid.appendChild(noneBtn);
+
+  for (const color of TASK_COLOR_PALETTE) {
+    const s = document.createElement("button");
+    s.type = "button";
+    s.className = "task-color-swatch";
+    s.style.background = color;
+    s.setAttribute("aria-label", `Color ${color}`);
+    if (current === color) s.classList.add("task-color-swatch-active");
+    s.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onSelect(color);
+      closeTaskColorPicker(true);
+    });
+    grid.appendChild(s);
+  }
+
+  pop.appendChild(grid);
+  document.body.appendChild(pop);
+
+  function position() {
+    const rect = anchor.getBoundingClientRect();
+    const popRect = pop.getBoundingClientRect();
+    const margin = 8;
+    let top = rect.bottom + 6;
+    let left = rect.right - popRect.width;
+    if (left < margin) left = margin;
+    if (left + popRect.width > window.innerWidth - margin) {
+      left = window.innerWidth - popRect.width - margin;
+    }
+    if (top + popRect.height > window.innerHeight - margin) {
+      top = Math.max(margin, rect.top - popRect.height - 6);
+    }
+    pop.style.top = `${top}px`;
+    pop.style.left = `${left}px`;
+  }
+  position();
+
+  const onOutside = (e) => {
+    if (pop.contains(e.target) || anchor.contains(e.target)) return;
+    closeTaskColorPicker(true);
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") closeTaskColorPicker(true);
+  };
+  const onScroll = () => position();
+
+  document.addEventListener("mousedown", onOutside, true);
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("scroll", onScroll, true);
+  window.addEventListener("resize", onScroll, true);
+
+  activeColorPicker = { el: pop, onOutside, onKey, onScroll, restoreFocusInput, rowEl };
+
+  if (restoreFocusInput?.isConnected) {
+    restoreFocusInput.focus({ preventScroll: true });
+  }
 }
 
 function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd) {
@@ -398,6 +562,7 @@ async function supabaseRelocateTaskRow(supabase, userId, rowId, fields) {
       content: String(fields.content ?? ""),
       completed: !!fields.completed,
       is_subtask: !!fields.is_subtask,
+      color: normalizeTaskColor(fields.color),
     })
     .eq("id", rowId)
     .eq("user_id", userId);
@@ -524,9 +689,17 @@ function toggleAndRepositionTask(tasks, idx) {
   let suppressGeneralEmptyClickNewTask = false;
   const generalDropIndicator = createTaskDropIndicator(tasksField, tasksFieldRoot);
 
-  function createTask(text = "", checked = false, dbId = null, subtask = false) {
+  function createTask(text = "", checked = false, dbId = null, subtask = false, color = null) {
     const id = `task-${state.nextId++}`;
-    return { id, dbId, text, checked, subtask: !!subtask, _dirty: false };
+    return {
+      id,
+      dbId,
+      text,
+      checked,
+      subtask: !!subtask,
+      color: normalizeTaskColor(color),
+      _dirty: false,
+    };
   }
 
   function buildDragPayload(task) {
@@ -537,6 +710,7 @@ function toggleAndRepositionTask(tasks, idx) {
       text: task.text ?? "",
       checked: !!task.checked,
       subtask: !!task.subtask,
+      color: normalizeTaskColor(task.color),
     };
   }
 
@@ -597,10 +771,12 @@ function toggleAndRepositionTask(tasks, idx) {
     const content = String(source.text ?? "");
     const completed = !!source.checked;
     const isSubtask = !!source.subtask;
+    const color = normalizeTaskColor(source.color);
     const dbId = source.dbId ?? task.dbId ?? null;
 
-    if (isTaskEmptyText(content)) {
-      await deleteTaskFromDb(task);
+    // Never auto-delete on empty text: blur/flush must not lose persisted rows.
+    // The empty draft (no dbId yet) is also a no-op here — nothing to insert.
+    if (isTaskEmptyText(content) && !dbId) {
       return;
     }
 
@@ -615,6 +791,7 @@ function toggleAndRepositionTask(tasks, idx) {
           content,
           completed,
           is_subtask: isSubtask,
+          color,
         })
         .eq("id", dbId)
         .eq("user_id", authUserId);
@@ -632,6 +809,7 @@ function toggleAndRepositionTask(tasks, idx) {
         type: "general",
         date: getVisibleWeekMondayIso(),
         is_subtask: isSubtask,
+        color,
       })
       .select("id")
       .single();
@@ -671,7 +849,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     const { data, error } = await supabase
       .from("tasks")
-      .select("id, content, completed, created_at, is_subtask")
+      .select("id, content, completed, created_at, is_subtask, color")
       .eq("user_id", authUserId)
       .eq("type", "general")
       .eq("date", requestedWeekIso)
@@ -690,6 +868,7 @@ function toggleAndRepositionTask(tasks, idx) {
       text: row.content ?? "",
       checked: !!row.completed,
       subtask: !!row.is_subtask,
+      color: normalizeTaskColor(row.color),
     }));
     normalizeSubtaskFlags(state.tasks);
     state.tasks = partitionUncheckedBeforeChecked(state.tasks);
@@ -747,10 +926,16 @@ function toggleAndRepositionTask(tasks, idx) {
     task.text = currentText;
     normalizeSubtaskFlags(state.tasks);
     if (isTaskEmptyText(currentText)) {
-      if (task.dbId) void deleteTaskFromDb(task);
-      state.focusAfterRender = null;
-      state.tasks.splice(idx, 1);
-      return { needRender: true };
+      if (!task.dbId) {
+        // Brand-new draft never persisted — safe to drop from local state.
+        state.focusAfterRender = null;
+        state.tasks.splice(idx, 1);
+        return { needRender: true };
+      }
+      // Existing task became empty: persist the cleared text but keep the row.
+      // Users delete via the explicit trash button; blur must never lose data.
+      void persistTask(task);
+      return { needRender: false };
     }
     // Do not await: UI would freeze for one network round-trip per blur/commit.
     void persistTask(task);
@@ -846,6 +1031,8 @@ function toggleAndRepositionTask(tasks, idx) {
       autoSizeTextarea(input);
       input.addEventListener("focus", () => autoSizeTextarea(input));
 
+      applyTaskRowColor(row, task.color);
+
       const commitBtn = document.createElement("button");
       commitBtn.type = "button";
       commitBtn.className = "task-commit";
@@ -855,6 +1042,9 @@ function toggleAndRepositionTask(tasks, idx) {
       deleteBtn.type = "button";
       deleteBtn.className = "task-delete";
       deleteBtn.setAttribute("aria-label", "Delete task");
+
+      const colorBtn = createTaskColorButton();
+      syncTaskColorButton(colorBtn, task.color);
 
       const dragHandle = createTaskDragHandle();
 
@@ -866,6 +1056,7 @@ function toggleAndRepositionTask(tasks, idx) {
       actions.className = "task-row-actions";
       actions.appendChild(commitBtn);
       actions.appendChild(deleteBtn);
+      actions.appendChild(colorBtn);
       actions.appendChild(dragHandle);
 
       row.appendChild(checkbox);
@@ -892,6 +1083,41 @@ function toggleAndRepositionTask(tasks, idx) {
       deleteBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         removeTaskRow(taskId);
+      });
+
+      colorBtn.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = getTaskIndex(taskId);
+        if (idx === -1) return;
+        if (activeColorPicker?.rowEl === row) {
+          closeTaskColorPicker(true);
+          return;
+        }
+        const current = state.tasks[idx].color;
+        row.classList.add("task-row-color-open");
+        openTaskColorPicker(
+          colorBtn,
+          current,
+          (next) => {
+            const i2 = getTaskIndex(taskId);
+            if (i2 === -1) return;
+            const t = state.tasks[i2];
+            const nc = normalizeTaskColor(next);
+            if (t.color === nc) return;
+            t.color = nc;
+            const liveRow = tasksFieldRoot.querySelector(`.task-row[data-id="${taskId}"]`);
+            const liveColorBtn = liveRow?.querySelector(".task-color");
+            applyTaskRowColor(liveRow || row, nc);
+            syncTaskColorButton(liveColorBtn || colorBtn, nc);
+            if (!isTaskEmptyText(t.text)) {
+              markTaskDirty(t);
+              void persistTask(t);
+            }
+          },
+          input,
+          row
+        );
       });
 
       input.addEventListener(
@@ -987,6 +1213,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
       input.addEventListener("blur", () => {
         if (state.isDragging || taskDragInteractionActive) return;
+        if (activeColorPicker) return;
         void (async () => {
           await commitTask(taskId);
         })();
@@ -1117,9 +1344,10 @@ function toggleAndRepositionTask(tasks, idx) {
     const isCheckbox = e.target.classList.contains("task-checkbox");
     const isCommit = e.target.classList.contains("task-commit");
     const isDelete = e.target.classList.contains("task-delete");
+    const isColor = !!e.target.closest?.(".task-color");
     const isText = e.target.classList.contains("task-text");
-    if (!isCheckbox && !isText && !isCommit && !isDelete) return;
-    if (isCommit || isDelete) return;
+    if (!isCheckbox && !isText && !isCommit && !isDelete && !isColor) return;
+    if (isCommit || isDelete || isColor) return;
 
     if (isCheckbox) {
       let caret;
@@ -1268,6 +1496,7 @@ function toggleAndRepositionTask(tasks, idx) {
       const text = String(payload.text ?? "");
       const checked = !!payload.checked;
       const sub = !!payload.subtask;
+      const color = normalizeTaskColor(payload.color);
 
       if (payload.dbId) {
         const { ok, error } = await supabaseRelocateTaskRow(supabase, authUserId, payload.dbId, {
@@ -1277,6 +1506,7 @@ function toggleAndRepositionTask(tasks, idx) {
           content: text,
           completed: checked,
           is_subtask: sub,
+          color,
         });
         if (!ok) {
           console.error("Supabase move-to-general failed:", error);
@@ -1284,7 +1514,7 @@ function toggleAndRepositionTask(tasks, idx) {
         }
       }
 
-      const moved = createTask(text, checked, payload.dbId || null, sub);
+      const moved = createTask(text, checked, payload.dbId || null, sub, color);
       if (moved.checked) {
         state.tasks.push(moved);
       } else {
@@ -1421,9 +1651,17 @@ function toggleAndRepositionTask(tasks, idx) {
     let suppressDayEmptyClickNewPlan = false;
     const dayDropIndicator = createTaskDropIndicator(dayRect, tasksEl);
 
-    function createTask(text = "", checked = false, dbId = null, subtask = false) {
+    function createTask(text = "", checked = false, dbId = null, subtask = false, color = null) {
       const id = `d-${daySlugForId}-${state.nextId++}`;
-      return { id, dbId, text, checked, subtask: !!subtask, _dirty: false };
+      return {
+        id,
+        dbId,
+        text,
+        checked,
+        subtask: !!subtask,
+        color: normalizeTaskColor(color),
+        _dirty: false,
+      };
     }
 
     function buildDragPayload(task) {
@@ -1434,6 +1672,7 @@ function toggleAndRepositionTask(tasks, idx) {
         text: task.text ?? "",
         checked: !!task.checked,
         subtask: !!task.subtask,
+        color: normalizeTaskColor(task.color),
       };
     }
 
@@ -1472,17 +1711,18 @@ function toggleAndRepositionTask(tasks, idx) {
       const content = String(source.text ?? "");
       const completed = !!source.checked;
       const isSubtask = !!source.subtask;
+      const color = normalizeTaskColor(source.color);
       const dbId = source.dbId ?? task.dbId ?? null;
 
-      if (isTaskEmptyText(content)) {
-        await deleteTaskFromDb(task);
+      // Never auto-delete on empty text. Drafts without dbId are no-ops.
+      if (isTaskEmptyText(content) && !dbId) {
         return;
       }
 
       if (dbId) {
         const { error } = await supabase
           .from("tasks")
-          .update({ content, completed, is_subtask: isSubtask })
+          .update({ content, completed, is_subtask: isSubtask, color })
           .eq("id", dbId)
           .eq("user_id", currentUserId);
 
@@ -1500,6 +1740,7 @@ function toggleAndRepositionTask(tasks, idx) {
           day_name: dayMeta.dayName,
           date: dayMeta.date,
           is_subtask: isSubtask,
+          color,
         })
         .select("id")
         .single();
@@ -1522,7 +1763,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
       const { data, error } = await supabase
         .from("tasks")
-        .select("id, content, completed, created_at, is_subtask")
+        .select("id, content, completed, created_at, is_subtask, color")
         .eq("user_id", currentUserId)
         .eq("type", "daily")
         .eq("day_name", dayMeta.dayName)
@@ -1540,6 +1781,7 @@ function toggleAndRepositionTask(tasks, idx) {
         text: moveTimeToStart(row.content ?? ""),
         checked: !!row.completed,
         subtask: !!row.is_subtask,
+        color: normalizeTaskColor(row.color),
       }));
       state.tasks = partitionUncheckedBeforeChecked(state.tasks);
       normalizeSubtaskFlags(state.tasks);
@@ -1584,11 +1826,15 @@ function toggleAndRepositionTask(tasks, idx) {
       task.text = currentText;
       normalizeSubtaskFlags(state.tasks);
       if (isTaskEmptyText(currentText)) {
-        if (task.dbId) void deleteTaskFromDb(task);
-        state.focusAfterRender = null;
-        state.tasks.splice(idx, 1);
-        stabilizeTimeSorted();
-        return { needRender: true };
+        if (!task.dbId) {
+          state.focusAfterRender = null;
+          state.tasks.splice(idx, 1);
+          stabilizeTimeSorted();
+          return { needRender: true };
+        }
+        // Persisted row that was emptied: keep it; only the trash button deletes.
+        void persistTask(task);
+        return { needRender: false };
       }
       // Time-tasks differ only by ordering: sort timed tasks among themselves on commit.
       stabilizeTimeSorted();
@@ -1676,6 +1922,8 @@ function toggleAndRepositionTask(tasks, idx) {
         main.className = "task-main";
         main.appendChild(input);
 
+        applyTaskRowColor(row, task.color);
+
         const commitBtn = document.createElement("button");
         commitBtn.type = "button";
         commitBtn.className = "task-commit";
@@ -1686,12 +1934,16 @@ function toggleAndRepositionTask(tasks, idx) {
         deleteBtn.className = "task-delete";
         deleteBtn.setAttribute("aria-label", "Delete task");
 
+        const colorBtn = createTaskColorButton();
+        syncTaskColorButton(colorBtn, task.color);
+
         const dragHandle = createTaskDragHandle();
 
         const actions = document.createElement("div");
         actions.className = "task-row-actions";
         actions.appendChild(commitBtn);
         actions.appendChild(deleteBtn);
+        actions.appendChild(colorBtn);
         actions.appendChild(dragHandle);
 
         row.appendChild(checkbox);
@@ -1718,6 +1970,41 @@ function toggleAndRepositionTask(tasks, idx) {
         deleteBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           removeTaskRow(taskId);
+        });
+
+        colorBtn.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const idx = getTaskIndex(taskId);
+          if (idx === -1) return;
+          if (activeColorPicker?.rowEl === row) {
+            closeTaskColorPicker(true);
+            return;
+          }
+          const current = state.tasks[idx].color;
+          row.classList.add("task-row-color-open");
+          openTaskColorPicker(
+            colorBtn,
+            current,
+            (next) => {
+              const i2 = getTaskIndex(taskId);
+              if (i2 === -1) return;
+              const t = state.tasks[i2];
+              const nc = normalizeTaskColor(next);
+              if (t.color === nc) return;
+              t.color = nc;
+              const liveRow = tasksEl.querySelector(`.task-row[data-id="${taskId}"]`);
+              const liveColorBtn = liveRow?.querySelector(".task-color");
+              applyTaskRowColor(liveRow || row, nc);
+              syncTaskColorButton(liveColorBtn || colorBtn, nc);
+              if (!isTaskEmptyText(t.text)) {
+                markTaskDirty(t);
+                void persistTask(t);
+              }
+            },
+            input,
+            row
+          );
         });
 
         input.addEventListener(
@@ -1819,6 +2106,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
         input.addEventListener("blur", () => {
           if (state.isDragging || taskDragInteractionActive) return;
+          if (activeColorPicker) return;
           void (async () => {
             await commitTask(taskId);
           })();
@@ -1915,12 +2203,13 @@ function toggleAndRepositionTask(tasks, idx) {
           return;
         }
 
+        const isColor = !!e.target.closest?.(".task-color");
         const isDragHandle =
           e.target.classList?.contains("task-drag-handle") ||
           e.target.classList?.contains("task-drag-handle-icon") ||
           !!e.target.closest?.(".task-drag-handle");
 
-        if (isCommit || isDelete || isDragHandle) {
+        if (isCommit || isDelete || isColor || isDragHandle) {
           return;
         }
 
@@ -2056,6 +2345,7 @@ function toggleAndRepositionTask(tasks, idx) {
         const textNorm = moveTimeToStart(payload.text);
         const checked = !!payload.checked;
         const sub = !!payload.subtask;
+        const color = normalizeTaskColor(payload.color);
 
         if (payload.dbId) {
           const { ok, error } = await supabaseRelocateTaskRow(supabase, currentUserId, payload.dbId, {
@@ -2065,6 +2355,7 @@ function toggleAndRepositionTask(tasks, idx) {
             content: String(textNorm),
             completed: checked,
             is_subtask: sub,
+            color,
           });
           if (!ok) {
             console.error("Supabase move-to-day failed:", error);
@@ -2072,7 +2363,7 @@ function toggleAndRepositionTask(tasks, idx) {
           }
         }
 
-        const moved = createTask(textNorm, checked, payload.dbId || null, sub);
+        const moved = createTask(textNorm, checked, payload.dbId || null, sub, color);
         if (moved.checked) {
           state.tasks.push(moved);
         } else {
@@ -2358,6 +2649,19 @@ async function logout() {
   if (!supabase) {
     console.error("Supabase client missing.");
     return { ok: false, error: "Auth client not initialized." };
+  }
+
+  // Drop focus so a still-typed value isn't lost when DOM is wiped after sign out.
+  const active = document.activeElement;
+  if (active && typeof active.blur === "function") active.blur();
+
+  // Persist anything that's still in-flight before the session goes away.
+  try {
+    if (typeof window.__flushAllTaskSaves === "function") {
+      await window.__flushAllTaskSaves();
+    }
+  } catch (err) {
+    console.error("Pre-logout flush failed:", err);
   }
 
   const { error } = await supabase.auth.signOut();

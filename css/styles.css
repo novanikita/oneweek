@@ -873,14 +873,16 @@ h1 {
 .task-row:has(.task-text:focus),
 .task-row:has(.task-commit:focus),
 .task-row:has(.task-delete:focus),
+.task-row:has(.task-color:focus),
 .task-row:has(.task-drag-handle:focus),
 .task-row.task-row-reorder-active,
-.task-row.task-row-dragging {
+.task-row.task-row-dragging,
+.task-row.task-row-color-open {
   position: relative;
   z-index: 4;
   overflow: visible;
   border-color: var(--color-border);
-  padding-right: 6.1em;
+  padding-right: 7.6em;
 }
 
 /* Несколько строк: чекбокс и кнопки — по центру первой строки, не всего блока */
@@ -932,9 +934,11 @@ h1 {
 .task-row:has(.task-text:focus) .task-row-actions,
 .task-row:has(.task-commit:focus) .task-row-actions,
 .task-row:has(.task-delete:focus) .task-row-actions,
+.task-row:has(.task-color:focus) .task-row-actions,
 .task-row:has(.task-drag-handle:focus) .task-row-actions,
 .task-row.task-row-reorder-active .task-row-actions,
-.task-row.task-row-dragging .task-row-actions {
+.task-row.task-row-dragging .task-row-actions,
+.task-row.task-row-color-open .task-row-actions {
   display: flex;
   pointer-events: auto;
 }
@@ -966,7 +970,8 @@ h1 {
 }
 
 .task-row-actions .task-commit,
-.task-row-actions .task-delete {
+.task-row-actions .task-delete,
+.task-row-actions .task-color {
   width: 1.65em;
   height: 1.2em;
   min-width: 1.65em;
@@ -976,11 +981,146 @@ h1 {
 
 .task-commit,
 .task-delete,
+.task-color,
 .task-drag-handle {
   flex: 0 0 auto;
   color: var(--color-text);
   opacity: 0.8;
   border-color: color-mix(in srgb, var(--color-text) 35%, transparent);
+}
+
+.task-color {
+  font: inherit;
+  background: transparent;
+  border: 0.07em solid color-mix(in srgb, var(--color-text) 35%, transparent);
+  border-radius: 0.4em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.task-color-dot {
+  display: block;
+  width: 0.7em;
+  height: 0.7em;
+  border-radius: 50%;
+  border: 0.08em solid currentColor;
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.task-color-dot[data-filled="1"] {
+  border-color: rgba(0, 0, 0, 0.25);
+}
+
+.task-row:has(.task-text:focus) .task-color:hover,
+.task-row:has(.task-commit:focus) .task-color:hover,
+.task-row:has(.task-delete:focus) .task-color:hover,
+.task-row:has(.task-color:focus) .task-color:hover,
+.task-row:has(.task-drag-handle:focus) .task-color:hover,
+.task-row.task-row-color-open .task-color {
+  color: var(--color-text);
+  border-color: var(--color-text);
+  opacity: 1;
+}
+
+.task-color-popover {
+  position: fixed;
+  z-index: 1000;
+  padding: 0.55em;
+  background: var(--color-background);
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.55em;
+  box-shadow: 0 0.6em 1.5em rgba(0, 0, 0, 0.18);
+}
+
+.task-color-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1.7em);
+  gap: 0.4em;
+}
+
+.task-color-swatch {
+  width: 1.7em;
+  height: 1.7em;
+  padding: 0;
+  border-radius: 0.4em;
+  border: 0.08em solid var(--color-border);
+  background: var(--color-background);
+  cursor: pointer;
+  position: relative;
+}
+
+.task-color-swatch:hover {
+  border-color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.task-color-swatch-active {
+  border-color: var(--color-text);
+  border-width: 0.14em;
+}
+
+.task-color-swatch-none::after {
+  content: "";
+  position: absolute;
+  inset: 0.2em;
+  border-radius: 0.22em;
+  background: linear-gradient(
+    to top right,
+    transparent calc(50% - 0.07em),
+    var(--color-text) calc(50% - 0.07em),
+    var(--color-text) calc(50% + 0.07em),
+    transparent calc(50% + 0.07em)
+  );
+  opacity: 0.7;
+}
+
+/* Colored task row: pastel background with forced dark foreground for readability across themes. */
+.task-row[data-color] {
+  color: #1a1a1a;
+  border-color: transparent;
+}
+
+.task-row[data-color] .task-text {
+  color: #1a1a1a;
+  caret-color: #1a1a1a;
+}
+
+.task-row[data-color] .task-text::selection {
+  background: rgba(0, 0, 0, 0.18);
+  color: #1a1a1a;
+}
+
+.task-row[data-color] .task-checkbox {
+  border-color: #1a1a1a;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.task-row[data-color] .task-checkbox.checked {
+  background: #1a1a1a;
+}
+
+.task-row[data-color] .task-checkbox.checked::after {
+  background-color: rgba(255, 255, 255, 0.95);
+}
+
+.task-row[data-color] .task-commit,
+.task-row[data-color] .task-delete,
+.task-row[data-color] .task-color {
+  color: #1a1a1a;
+  border-color: rgba(0, 0, 0, 0.35);
+}
+
+.task-row[data-color] .task-commit::after,
+.task-row[data-color] .task-delete::after,
+.task-row[data-color] .task-drag-handle-icon {
+  background-color: #1a1a1a;
+}
+
+.task-row[data-color] .task-color-dot {
+  border-color: #1a1a1a;
 }
 
 .task-row:has(.task-text:focus) .task-commit,
