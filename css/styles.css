@@ -57,15 +57,23 @@ body.week-offset-away .task-delete {
 
 .layout {
   display: grid;
-  grid-template-columns: 2fr 1fr;
-  grid-template-rows: auto 1fr;
+  /* minmax(0, …) prevents grid tracks from being forced taller/wider by their
+     content. Without it, a day packed with tasks stretches its row and the
+     `.day-tasks` overflow:auto never engages. */
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 100dvh;
   height: 100dvh;
+  overflow: hidden;
 }
 
 .layout-header {
   grid-column: 1 / -1;
   padding: 1em;
+}
+
+.layout-footer {
+  display: none;
 }
 
 .panel-titlebar.layout-header {
@@ -165,6 +173,8 @@ body.week-offset-away .task-delete {
   flex-direction: column;
   padding: 0 1em 1em;
   min-width: 0;
+  /* lets children with overflow:auto actually clip to the panel height */
+  min-height: 0;
 }
 
 /* No gutter between week column and tasks column (or stacked panels on narrow view). */
@@ -249,6 +259,34 @@ h1 {
 
 .week-nav-btn--next .icon-themed-arrow {
   transform: scaleX(-1);
+}
+
+/* Connection status banner */
+.connection-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25em;
+  transform: translateX(-50%);
+  z-index: 200;
+  max-width: calc(100vw - 2em);
+  padding: 0.55em 1em;
+  border-radius: 999em;
+  background: color-mix(in oklab, var(--color-text) 88%, transparent);
+  color: var(--color-background);
+  font-size: 0.85em;
+  line-height: 1.2;
+  text-align: center;
+  box-shadow: 0 0.25em 0.75em rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.connection-banner[hidden] {
+  display: block;
+  opacity: 0;
+  transform: translate(-50%, 0.5em);
+  pointer-events: none;
 }
 
 /* Sidebar */
@@ -634,8 +672,10 @@ h1 {
 
 .week-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: repeat(2, 1fr);
+  /* minmax(0, 1fr) is critical: otherwise rows expand under task lists and the
+     day's scroll never engages. */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: 0;
   flex: 1;
   min-height: 0;
@@ -778,13 +818,49 @@ h1 {
 
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto clamp(26rem, 62dvh, 40rem) minmax(0, 1fr);
+    grid-template-rows: auto clamp(32rem, 72dvh, 50rem) minmax(0, 1fr) auto;
     min-height: 100dvh;
     row-gap: 0;
   }
 
   .layout-header {
     padding: 0.75em;
+  }
+
+  .layout-header-right .panel-title {
+    display: none;
+  }
+
+  .layout-header-menu .icon-themed {
+    width: 1.35em;
+    height: 1.35em;
+  }
+
+  .week-nav {
+    --week-nav-gap: 0.4em;
+    --week-nav-label-width: 7.5em;
+    grid-template-columns: 1.15em var(--week-nav-gap) var(--week-nav-label-width) var(--week-nav-gap) 1.15em;
+    width: calc(1.15em + var(--week-nav-gap) + var(--week-nav-label-width) + var(--week-nav-gap) + 1.15em);
+  }
+
+  .week-nav-btn .icon-themed {
+    width: 1.15em;
+    height: 1.15em;
+  }
+
+  .layout-footer {
+    display: flex;
+    grid-column: 1 / -1;
+    align-items: center;
+    justify-content: center;
+    padding: 0.75em;
+    color: var(--color-text);
+    line-height: 1;
+    text-align: center;
+  }
+
+  .layout-footer-title {
+    font: inherit;
   }
 
   .panel {
@@ -833,8 +909,13 @@ h1 {
   }
 
   .week-grid > .rectangle {
-    min-height: 5.75rem;
+    min-height: 7rem;
   }
+
+  .task-row:not(.task-row-multiline) .task-text {
+    max-height: var(--task-line);
+  }
+
 
   .tasks-field {
     min-height: 0;
@@ -855,6 +936,9 @@ h1 {
   flex-direction: column;
   min-height: 100%;
   padding-top: 0.5em;
+  /* Bottom buffer so the actions popover (which sits below the active row)
+     never gets clipped by the scroll container, even for the last task. */
+  padding-bottom: 3em;
 }
 
 .task-row {
@@ -882,7 +966,6 @@ h1 {
   z-index: 4;
   overflow: visible;
   border-color: var(--color-border);
-  padding-right: 7.6em;
 }
 
 /* Несколько строк: чекбокс и кнопки — по центру первой строки, не всего блока */
@@ -915,20 +998,21 @@ h1 {
 .task-row-actions {
   display: none;
   position: absolute;
-  right: 0.38em;
-  top: 50%;
-  transform: translateY(-50%);
+  top: calc(100% + 0.3em);
+  left: 50%;
+  transform: translateX(-50%);
   flex-direction: row;
   flex-wrap: nowrap;
-  gap: 0.35em;
+  gap: 0.4em;
   align-items: center;
-  height: var(--task-line);
+  padding: 0.35em 0.45em;
+  background: var(--color-background);
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.55em;
+  box-shadow: 0 0.4em 1em rgba(0, 0, 0, 0.12);
   pointer-events: none;
-  z-index: 1;
-}
-
-.task-row.task-row-multiline .task-row-actions {
-  top: calc(var(--task-pad-y) + var(--task-line) / 2 + 0.2em);
+  z-index: 6;
+  white-space: nowrap;
 }
 
 .task-row:has(.task-text:focus) .task-row-actions,
@@ -941,6 +1025,12 @@ h1 {
 .task-row.task-row-color-open .task-row-actions {
   display: flex;
   pointer-events: auto;
+}
+
+/* Hide the popover while the row is actively being dragged so it doesn't
+   end up baked into the HTML5 drag-image ghost. */
+.task-row.task-row-dragging .task-row-actions {
+  display: none;
 }
 
 .task-checkbox {
@@ -1121,6 +1211,25 @@ h1 {
 
 .task-row[data-color] .task-color-dot {
   border-color: #1a1a1a;
+}
+
+/* The actions popover floats over the theme background, not the colored row,
+   so buttons inside it follow the theme colors regardless of the row color. */
+.task-row[data-color] .task-row-actions .task-commit,
+.task-row[data-color] .task-row-actions .task-delete,
+.task-row[data-color] .task-row-actions .task-color {
+  color: var(--color-text);
+  border-color: color-mix(in srgb, var(--color-text) 35%, transparent);
+}
+
+.task-row[data-color] .task-row-actions .task-commit::after,
+.task-row[data-color] .task-row-actions .task-delete::after,
+.task-row[data-color] .task-row-actions .task-drag-handle-icon {
+  background-color: var(--color-text);
+}
+
+.task-row[data-color] .task-row-actions .task-color-dot {
+  border-color: var(--color-text);
 }
 
 .task-row:has(.task-text:focus) .task-commit,
@@ -1306,10 +1415,35 @@ h1 {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   cursor: text;
   display: block;
   position: relative;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text) 30%, transparent) transparent;
+  -webkit-overflow-scrolling: touch;
+}
+
+.day-tasks::-webkit-scrollbar,
+.tasks-field-root::-webkit-scrollbar {
+  width: 0.3em;
+}
+
+.day-tasks::-webkit-scrollbar-track,
+.tasks-field-root::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.day-tasks::-webkit-scrollbar-thumb,
+.tasks-field-root::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-text) 30%, transparent);
+  border-radius: 0.4em;
+}
+
+.day-tasks::-webkit-scrollbar-thumb:hover,
+.tasks-field-root::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-text) 45%, transparent);
 }
 
 .task-drop-indicator {
@@ -1328,4 +1462,58 @@ h1 {
 .day-tasks .task-row {
   position: relative;
   z-index: 1;
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    width: 100vw;
+    max-width: none;
+    border-right: 0;
+  }
+
+  .task-row-actions {
+    position: fixed;
+    top: auto;
+    left: auto;
+    right: auto;
+    transform: none;
+    gap: 0.6em;
+    padding: 0.7em 0.8em;
+    justify-content: space-between;
+    border-radius: 0.7em;
+    z-index: 100;
+  }
+
+  .task-row-actions .task-commit,
+  .task-row-actions .task-delete,
+  .task-row-actions .task-color,
+  .task-row-actions .task-drag-handle {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    height: 2.2em;
+    min-height: 2.2em;
+    padding: 0;
+  }
+
+  .task-row-actions .task-drag-handle {
+    border: 0.07em solid color-mix(in srgb, var(--color-text) 35%, transparent);
+    border-radius: 0.4em;
+  }
+
+  .task-row-actions .task-commit::after,
+  .task-row-actions .task-delete::after {
+    width: 1em;
+    height: 1em;
+  }
+
+  .task-row-actions .task-color-dot {
+    width: 0.9em;
+    height: 0.9em;
+  }
+
+  .task-row-actions .task-drag-handle-icon {
+    width: 0.75em;
+    height: 1.1em;
+  }
 }

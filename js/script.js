@@ -44,6 +44,114 @@ if (typeof window !== "undefined") {
 
 const WEEK_CHANGE_EVENT = "week-offset-change";
 
+/**
+ * Network status — drives the offline banner and lets us know when to retry
+ * pending task writes. We only flip to "offline" when a Supabase call actually
+ * fails with a network-level error (or `navigator.onLine` reports offline);
+ * server errors like RLS rejections don't show the banner.
+ */
+const oneweekNet = {
+  hasNetFailure: false,
+  retryListeners: new Set(),
+};
+
+function isLikelyNetworkError(err) {
+  if (!err) return false;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return true;
+  const message = String(err?.message ?? err ?? "").toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes("failed to fetch") ||
+    message.includes("networkerror") ||
+    message.includes("network error") ||
+    message.includes("load failed") ||
+    message.includes("err_internet_disconnected") ||
+    message.includes("err_network") ||
+    message.includes("err_name_not_resolved") ||
+    message.includes("err_connection")
+  );
+}
+
+function isOnline() {
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
+
+function updateConnectionBanner() {
+  const banner = document.getElementById("connection-banner");
+  if (!banner) return;
+  const offline = !isOnline() || oneweekNet.hasNetFailure;
+  banner.hidden = !offline;
+}
+
+function markNetworkSuccess() {
+  if (!oneweekNet.hasNetFailure) {
+    updateConnectionBanner();
+    return;
+  }
+  oneweekNet.hasNetFailure = false;
+  updateConnectionBanner();
+}
+
+function markNetworkFailure(err) {
+  if (!isLikelyNetworkError(err)) return;
+  scheduleNetworkPoll();
+  if (oneweekNet.hasNetFailure) return;
+  oneweekNet.hasNetFailure = true;
+  updateConnectionBanner();
+}
+
+let networkPollTimer = null;
+/**
+ * `navigator.onLine` doesn't fire `online` when only Supabase is unreachable
+ * (e.g. blocked by ISP, DNS, or just flaky VPN). Poll a retry every 15s while
+ * we still think the network is broken; `markNetworkSuccess()` clears the flag
+ * and ends the loop.
+ */
+function scheduleNetworkPoll() {
+  if (networkPollTimer) return;
+  networkPollTimer = setInterval(() => {
+    if (!oneweekNet.hasNetFailure) {
+      clearInterval(networkPollTimer);
+      networkPollTimer = null;
+      return;
+    }
+    triggerNetworkRetry();
+  }, 15000);
+}
+
+function onNetworkRetry(fn) {
+  oneweekNet.retryListeners.add(fn);
+  return () => oneweekNet.retryListeners.delete(fn);
+}
+
+function triggerNetworkRetry() {
+  for (const fn of [...oneweekNet.retryListeners]) {
+    try {
+      void fn();
+    } catch (err) {
+      console.error("Retry listener failed:", err);
+    }
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => {
+    oneweekNet.hasNetFailure = false;
+    updateConnectionBanner();
+    triggerNetworkRetry();
+  });
+  window.addEventListener("offline", () => {
+    updateConnectionBanner();
+  });
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", updateConnectionBanner);
+    } else {
+      updateConnectionBanner();
+    }
+  }
+}
+
 function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist failed:") {
   const pendingPersist = new Map();
   return async function persistTask(task) {
@@ -57,9 +165,12 @@ function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist
       subtask: !!task.subtask,
       color: normalizeTaskColor(task.color),
     };
+    let writeFailed = false;
     const next = (tail ?? Promise.resolve())
       .then(() => insertOrUpdateTaskInDb(task, snapshot))
       .catch((err) => {
+        writeFailed = true;
+        markNetworkFailure(err);
         console.error(logPrefix, err);
       });
     pendingPersist.set(key, next);
@@ -69,7 +180,11 @@ function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist
       if (pendingPersist.get(key) === next) {
         pendingPersist.delete(key);
       }
-      if (task) task._dirty = false;
+      if (task) {
+        // Keep `_dirty` so the next flush / retry picks the task up again.
+        if (writeFailed) task._dirty = true;
+        else task._dirty = false;
+      }
     }
   };
 }
@@ -118,6 +233,57 @@ if (typeof document !== "undefined") {
   window.addEventListener("pagehide", () => {
     void flushAllTaskSaves();
   });
+}
+
+/**
+ * Local cache of the user's tasks, by week (general) or by day (daily).
+ *
+ * Why this exists: Supabase is hosted on AWS and is intermittently unreachable
+ * from some networks (e.g. parts of Russia without a VPN). When `select` fails,
+ * we previously left `state.tasks = []` and the user saw a blank board even
+ * though their data is fine in the DB. The cache lets us paint the last known
+ * good state immediately, and we only replace it when the server actually
+ * answers. Locally edited state is also persisted here so offline edits survive
+ * a reload.
+ */
+function generalTasksCacheKey(userId, weekIso) {
+  return `oneweek-cache-general-${userId}-${weekIso}`;
+}
+
+function dailyTasksCacheKey(userId, dayName, date) {
+  return `oneweek-cache-daily-${userId}-${dayName}-${date}`;
+}
+
+function readTasksCache(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.tasks)) return null;
+    return parsed.tasks;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeTasksCache(key, tasks) {
+  try {
+    const serializable = (tasks || []).map((t) => ({
+      dbId: t.dbId ?? null,
+      text: String(t.text ?? ""),
+      checked: !!t.checked,
+      subtask: !!t.subtask,
+      color: normalizeTaskColor(t.color),
+      // `_dirty` survives reload so unsynced offline edits are retried.
+      dirty: !!t._dirty,
+    }));
+    localStorage.setItem(
+      key,
+      JSON.stringify({ tasks: serializable, savedAt: Date.now() })
+    );
+  } catch (_) {
+    /* localStorage may be full or disabled — ignore. */
+  }
 }
 
 if (typeof window !== "undefined") {
@@ -297,7 +463,12 @@ function openTaskColorPicker(anchor, currentColor, onSelect, restoreFocusInput, 
     const popRect = pop.getBoundingClientRect();
     const margin = 8;
     let top = rect.bottom + 6;
-    let left = rect.right - popRect.width;
+    // Center horizontally under the row (so the picker lines up with the
+    // actions popover, which is itself centered under the row). Fall back to
+    // centering under the anchor button if the row isn't known.
+    const centerEl = rowEl || anchor;
+    const centerRect = centerEl.getBoundingClientRect();
+    let left = centerRect.left + centerRect.width / 2 - popRect.width / 2;
     if (left < margin) left = margin;
     if (left + popRect.width > window.innerWidth - margin) {
       left = window.innerWidth - popRect.width - margin;
@@ -545,6 +716,52 @@ if (typeof document !== "undefined") {
 }
 
 /**
+ * Compute where to insert a task dragged in from another block, based on the
+ * cursor position. Honours the "unchecked above, checked below" partition: an
+ * unchecked task can only land in the unchecked segment; a checked one only
+ * in the checked segment. If the cursor is in the wrong segment, snap to the
+ * nearest boundary inside the allowed segment.
+ */
+function computeCrossInsertIndex(tasks, getTaskIndex, e, listEl, payloadChecked) {
+  const len = tasks.length;
+  const firstChecked = firstCheckedTaskIndex(tasks);
+  const segStart = payloadChecked ? (firstChecked === -1 ? len : firstChecked) : 0;
+  const segEnd = payloadChecked ? len : (firstChecked === -1 ? len : firstChecked);
+
+  const row = e.target.closest?.(".task-row");
+  if (!row || !listEl?.contains(row)) {
+    return payloadChecked ? len : (firstChecked === -1 ? len : firstChecked);
+  }
+  const id = row.dataset?.id;
+  const targetIdx = id ? getTaskIndex(id) : -1;
+  if (targetIdx < 0) {
+    return payloadChecked ? len : (firstChecked === -1 ? len : firstChecked);
+  }
+  const insertBefore = taskRowInsertBefore(e, row);
+  let insertAt = insertBefore ? targetIdx : targetIdx + 1;
+  if (insertAt < segStart) insertAt = segStart;
+  if (insertAt > segEnd) insertAt = segEnd;
+  return insertAt;
+}
+
+/**
+ * Place the drop indicator at the would-be insert position for a cross-block
+ * drag. `insertAt === tasks.length` means "after the very last row".
+ */
+function showCrossDropIndicator(indicator, listEl, insertAt) {
+  if (!listEl) {
+    indicator.hide();
+    return;
+  }
+  const rows = listEl.querySelectorAll(".task-row:not(.task-row-dragging)");
+  if (insertAt >= rows.length) {
+    indicator.showAtEnd(listEl);
+    return;
+  }
+  indicator.showBeforeRow(rows[Math.max(0, insertAt)]);
+}
+
+/**
  * One Supabase write for cross-panel moves (type + day + content in one request).
  * Do not require `.select()` after update: RLS often allows UPDATE but not returning rows,
  * which yields empty `data` with no `error` — that previously blocked the UI incorrectly.
@@ -759,7 +976,12 @@ function toggleAndRepositionTask(tasks, idx) {
       .eq("id", task.dbId)
       .eq("user_id", authUserId);
 
-    if (error) console.error("Supabase delete failed:", error);
+    if (error) {
+      markNetworkFailure(error);
+      console.error("Supabase delete failed:", error);
+      throw error;
+    }
+    markNetworkSuccess();
     task.dbId = null;
   }
 
@@ -796,7 +1018,12 @@ function toggleAndRepositionTask(tasks, idx) {
         .eq("id", dbId)
         .eq("user_id", authUserId);
 
-      if (error) console.error("Supabase update failed:", error);
+      if (error) {
+        markNetworkFailure(error);
+        console.error("Supabase update failed:", error);
+        throw error;
+      }
+      markNetworkSuccess();
       return;
     }
 
@@ -815,14 +1042,77 @@ function toggleAndRepositionTask(tasks, idx) {
       .single();
 
     if (error) {
+      markNetworkFailure(error);
       console.error("Supabase insert failed:", error);
-      return;
+      throw error;
     }
 
+    markNetworkSuccess();
     task.dbId = data?.id ?? null;
   }
 
   const persistTask = createPersistTask(insertOrUpdateTaskInDb, "Supabase persist failed:");
+
+  function applyCachedGeneralTasks(weekIso) {
+    if (!authUserId) return false;
+    const cached = readTasksCache(generalTasksCacheKey(authUserId, weekIso));
+    if (!cached) return false;
+    state.tasks = cached.map((row) => ({
+      id: `task-${state.nextId++}`,
+      dbId: row.dbId ?? null,
+      text: row.text ?? "",
+      checked: !!row.checked,
+      subtask: !!row.subtask,
+      color: normalizeTaskColor(row.color),
+      _dirty: !!row.dirty,
+    }));
+    normalizeSubtaskFlags(state.tasks);
+    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    return true;
+  }
+
+  /**
+   * Combine the authoritative server snapshot with anything the user changed
+   * locally that hasn't been persisted yet. Local edits win for content/state
+   * because they're newer than the server row; brand-new drafts (no dbId) get
+   * appended so they survive a reload while offline.
+   */
+  function mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore) {
+    const localByDbId = new Map();
+    const localOrphans = [];
+    for (const t of localBefore) {
+      if (!t._dirty) continue;
+      if (t.dbId) localByDbId.set(t.dbId, t);
+      else if (!isTaskEmptyText(t.text)) localOrphans.push(t);
+    }
+    if (localByDbId.size === 0 && localOrphans.length === 0) {
+      return serverTasks;
+    }
+    const merged = serverTasks.map((srv) => {
+      const local = localByDbId.get(srv.dbId);
+      if (!local) return srv;
+      return {
+        ...srv,
+        text: local.text,
+        checked: local.checked,
+        subtask: local.subtask,
+        color: normalizeTaskColor(local.color),
+        _dirty: true,
+      };
+    });
+    for (const orphan of localOrphans) {
+      merged.push({
+        id: `task-${state.nextId++}`,
+        dbId: null,
+        text: orphan.text,
+        checked: !!orphan.checked,
+        subtask: !!orphan.subtask,
+        color: normalizeTaskColor(orphan.color),
+        _dirty: true,
+      });
+    }
+    return merged;
+  }
 
   async function loadTasksForUser() {
     if (!supabase) {
@@ -832,6 +1122,13 @@ function toggleAndRepositionTask(tasks, idx) {
     if (!authUserId) return;
 
     const requestedWeekIso = getVisibleWeekMondayIso();
+
+    // Paint the cached state first so a flaky network can't hide the user's data.
+    // If there's no cache for this week, clear the list so we never accidentally
+    // show another week's tasks while the network request is in flight.
+    const hadCache = applyCachedGeneralTasks(requestedWeekIso);
+    if (!hadCache) state.tasks = [];
+    render();
 
     const migrateKey = `oneweek-general-date-migrated-${authUserId}`;
     if (!localStorage.getItem(migrateKey)) {
@@ -856,22 +1153,34 @@ function toggleAndRepositionTask(tasks, idx) {
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error("Supabase load failed:", error);
+      // Keep whatever we already showed from cache — losing it would surprise the user.
+      markNetworkFailure(error);
+      console.error("Supabase load failed (keeping cached tasks):", error);
       return;
     }
+    markNetworkSuccess();
 
     if (getVisibleWeekMondayIso() !== requestedWeekIso) return;
 
-    state.tasks = (data ?? []).map((row) => ({
+    const localBefore = state.tasks;
+    const serverTasks = (data ?? []).map((row) => ({
       id: `task-${state.nextId++}`,
       dbId: row.id,
       text: row.content ?? "",
       checked: !!row.completed,
       subtask: !!row.is_subtask,
       color: normalizeTaskColor(row.color),
+      _dirty: false,
     }));
+    state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
     normalizeSubtaskFlags(state.tasks);
     state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    writeTasksCache(generalTasksCacheKey(authUserId, requestedWeekIso), state.tasks);
+
+    // Network is back: push any local edits that were waiting.
+    for (const t of state.tasks) {
+      if (t._dirty) void persistTask(t);
+    }
   }
 
   async function handleSession(session) {
@@ -1003,6 +1312,15 @@ function toggleAndRepositionTask(tasks, idx) {
     if (!isAuthed) {
       renderGuestPrompt();
       return;
+    }
+
+    // Keep the on-disk cache in sync with the live view so reloads (and offline
+    // edits) survive without a network round-trip.
+    if (authUserId) {
+      writeTasksCache(
+        generalTasksCacheKey(authUserId, getVisibleWeekMondayIso()),
+        state.tasks
+      );
     }
 
     tasksFieldRoot.innerHTML = "";
@@ -1434,6 +1752,15 @@ function toggleAndRepositionTask(tasks, idx) {
     await flushDirtyGeneralTasks();
   });
 
+  // When the network comes back, retry pending writes and re-pull the week so
+  // we can merge in anything other devices changed while we were offline.
+  onNetworkRetry(async () => {
+    if (!isAuthed) return;
+    await flushDirtyGeneralTasks();
+    await loadTasksForUser();
+    render();
+  });
+
   tasksFieldRoot.addEventListener("paste", (e) => {
     if (!isAuthed) return;
     const input = e.target;
@@ -1459,7 +1786,14 @@ function toggleAndRepositionTask(tasks, idx) {
     e.dataTransfer.dropEffect = "move";
     const payload = readDragPayloadFromEvent(e);
     if (payload && payload.sourceBlock !== GENERAL_BLOCK_ID) {
-      generalDropIndicator.showAtEnd(list);
+      const insertAt = computeCrossInsertIndex(
+        state.tasks,
+        getTaskIndex,
+        e,
+        list,
+        !!payload.checked
+      );
+      showCrossDropIndicator(generalDropIndicator, list, insertAt);
       return;
     }
     updateTaskDropIndicator(
@@ -1489,6 +1823,16 @@ function toggleAndRepositionTask(tasks, idx) {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+
+      const list = tasksFieldRoot.querySelector(".tasks-list");
+      const insertAt = computeCrossInsertIndex(
+        state.tasks,
+        getTaskIndex,
+        e,
+        list,
+        !!payload.checked
+      );
+
       hideAllTaskDropIndicators();
 
       await flushAllTaskSaves();
@@ -1515,13 +1859,8 @@ function toggleAndRepositionTask(tasks, idx) {
       }
 
       const moved = createTask(text, checked, payload.dbId || null, sub, color);
-      if (moved.checked) {
-        state.tasks.push(moved);
-      } else {
-        const fc = firstCheckedTaskIndex(state.tasks);
-        if (fc === -1) state.tasks.push(moved);
-        else state.tasks.splice(fc, 0, moved);
-      }
+      const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
+      state.tasks.splice(safeInsertAt, 0, moved);
       state.focusAfterRender = { id: moved.id };
       render();
 
@@ -1701,7 +2040,12 @@ function toggleAndRepositionTask(tasks, idx) {
         .eq("id", task.dbId)
         .eq("user_id", currentUserId);
 
-      if (error) console.error("Supabase daily delete failed:", error);
+      if (error) {
+        markNetworkFailure(error);
+        console.error("Supabase daily delete failed:", error);
+        throw error;
+      }
+      markNetworkSuccess();
       task.dbId = null;
     }
 
@@ -1726,7 +2070,12 @@ function toggleAndRepositionTask(tasks, idx) {
           .eq("id", dbId)
           .eq("user_id", currentUserId);
 
-        if (error) console.error("Supabase daily update failed:", error);
+        if (error) {
+          markNetworkFailure(error);
+          console.error("Supabase daily update failed:", error);
+          throw error;
+        }
+        markNetworkSuccess();
         return;
       }
 
@@ -1746,10 +2095,12 @@ function toggleAndRepositionTask(tasks, idx) {
         .single();
 
       if (error) {
+        markNetworkFailure(error);
         console.error("Supabase daily insert failed:", error);
-        return;
+        throw error;
       }
 
+      markNetworkSuccess();
       task.dbId = data?.id ?? null;
     }
 
@@ -1758,33 +2109,117 @@ function toggleAndRepositionTask(tasks, idx) {
       "Supabase daily persist failed:"
     );
 
+    function applyCachedDayTasks() {
+      if (!currentUserId) return false;
+      const cached = readTasksCache(
+        dailyTasksCacheKey(currentUserId, dayMeta.dayName, dayMeta.date)
+      );
+      if (!cached) return false;
+      state.tasks = cached.map((row) => ({
+        id: `d-${daySlugForId}-${state.nextId++}`,
+        dbId: row.dbId ?? null,
+        text: moveTimeToStart(row.text ?? ""),
+        checked: !!row.checked,
+        subtask: !!row.subtask,
+        color: normalizeTaskColor(row.color),
+        _dirty: !!row.dirty,
+      }));
+      state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+      normalizeSubtaskFlags(state.tasks);
+      return true;
+    }
+
+    function mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore) {
+      const localByDbId = new Map();
+      const localOrphans = [];
+      for (const t of localBefore) {
+        if (!t._dirty) continue;
+        if (t.dbId) localByDbId.set(t.dbId, t);
+        else if (!isTaskEmptyText(t.text)) localOrphans.push(t);
+      }
+      if (localByDbId.size === 0 && localOrphans.length === 0) {
+        return serverTasks;
+      }
+      const merged = serverTasks.map((srv) => {
+        const local = localByDbId.get(srv.dbId);
+        if (!local) return srv;
+        return {
+          ...srv,
+          text: local.text,
+          checked: local.checked,
+          subtask: local.subtask,
+          color: normalizeTaskColor(local.color),
+          _dirty: true,
+        };
+      });
+      for (const orphan of localOrphans) {
+        merged.push({
+          id: `d-${daySlugForId}-${state.nextId++}`,
+          dbId: null,
+          text: orphan.text,
+          checked: !!orphan.checked,
+          subtask: !!orphan.subtask,
+          color: normalizeTaskColor(orphan.color),
+          _dirty: true,
+        });
+      }
+      return merged;
+    }
+
     async function loadTasksForDay() {
       if (!supabase || !isAuthed || !currentUserId) return;
+
+      const cachedDayName = dayMeta.dayName;
+      const cachedDate = dayMeta.date;
+
+      // Paint the cache before the network call. If there's nothing cached for
+      // this day, clear the list so we never show stale data from another day.
+      const hadCache = applyCachedDayTasks();
+      if (!hadCache) state.tasks = [];
+      render();
 
       const { data, error } = await supabase
         .from("tasks")
         .select("id, content, completed, created_at, is_subtask, color")
         .eq("user_id", currentUserId)
         .eq("type", "daily")
-        .eq("day_name", dayMeta.dayName)
-        .eq("date", dayMeta.date)
+        .eq("day_name", cachedDayName)
+        .eq("date", cachedDate)
         .order("created_at", { ascending: true });
 
       if (error) {
-        console.error("Supabase daily load failed:", error);
+        markNetworkFailure(error);
+        console.error("Supabase daily load failed (keeping cached tasks):", error);
         return;
       }
+      markNetworkSuccess();
 
-      state.tasks = (data ?? []).map((row) => ({
+      // If the user navigated to another week while the request was in flight,
+      // dayMeta has already changed — don't clobber the fresh state.
+      if (dayMeta.dayName !== cachedDayName || dayMeta.date !== cachedDate) return;
+
+      const localBefore = state.tasks;
+      const serverTasks = (data ?? []).map((row) => ({
         id: `d-${daySlugForId}-${state.nextId++}`,
         dbId: row.id,
         text: moveTimeToStart(row.content ?? ""),
         checked: !!row.completed,
         subtask: !!row.is_subtask,
         color: normalizeTaskColor(row.color),
+        _dirty: false,
       }));
+      state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
       state.tasks = partitionUncheckedBeforeChecked(state.tasks);
       normalizeSubtaskFlags(state.tasks);
+      writeTasksCache(
+        dailyTasksCacheKey(currentUserId, cachedDayName, cachedDate),
+        state.tasks
+      );
+
+      // Network is back — retry any waiting offline edits.
+      for (const t of state.tasks) {
+        if (t._dirty) void persistTask(t);
+      }
     }
 
     function focusTask(id, start, end) {
@@ -1892,6 +2327,14 @@ function toggleAndRepositionTask(tasks, idx) {
 
     function render() {
       tasksEl.innerHTML = "";
+
+      // Keep the cache aligned with the live view (offline edits survive reload).
+      if (isAuthed && currentUserId) {
+        writeTasksCache(
+          dailyTasksCacheKey(currentUserId, dayMeta.dayName, dayMeta.date),
+          state.tasks
+        );
+      }
 
       const list = document.createElement("div");
       list.className = "tasks-list";
@@ -2301,6 +2744,14 @@ function toggleAndRepositionTask(tasks, idx) {
       await flushDirtyDayTasks();
     });
 
+    // Same idea as the general panel: on reconnection, push then pull.
+    onNetworkRetry(async () => {
+      if (!isAuthed) return;
+      await flushDirtyDayTasks();
+      await loadTasksForDay();
+      render();
+    });
+
     tasksEl.addEventListener("dragover", (e) => {
       if (!isAuthed || !isActiveTaskDragEvent(e)) return;
       const list = tasksEl.querySelector(".tasks-list");
@@ -2309,13 +2760,14 @@ function toggleAndRepositionTask(tasks, idx) {
       e.dataTransfer.dropEffect = "move";
       const payload = readDragPayloadFromEvent(e);
       if (payload && payload.sourceBlock !== blockId) {
-        const rows = list.querySelectorAll(".task-row:not(.task-row-dragging)");
-        const fc = firstCheckedTaskIndex(state.tasks);
-        if (fc === -1 || !rows.length) {
-          dayDropIndicator.showAtEnd(list);
-        } else {
-          dayDropIndicator.showBeforeRow(rows[Math.min(fc, rows.length - 1)]);
-        }
+        const insertAt = computeCrossInsertIndex(
+          state.tasks,
+          getTaskIndex,
+          e,
+          list,
+          !!payload.checked
+        );
+        showCrossDropIndicator(dayDropIndicator, list, insertAt);
         return;
       }
       updateTaskDropIndicator(tasksEl, dayDropIndicator, list, e, state.draggedId, getTaskIndex);
@@ -2338,6 +2790,16 @@ function toggleAndRepositionTask(tasks, idx) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
+
+        const list = tasksEl.querySelector(".tasks-list");
+        const insertAt = computeCrossInsertIndex(
+          state.tasks,
+          getTaskIndex,
+          e,
+          list,
+          !!payload.checked
+        );
+
         hideAllTaskDropIndicators();
 
         await flushAllTaskSaves();
@@ -2364,13 +2826,8 @@ function toggleAndRepositionTask(tasks, idx) {
         }
 
         const moved = createTask(textNorm, checked, payload.dbId || null, sub, color);
-        if (moved.checked) {
-          state.tasks.push(moved);
-        } else {
-          const fc = firstCheckedTaskIndex(state.tasks);
-          if (fc === -1) state.tasks.push(moved);
-          else state.tasks.splice(fc, 0, moved);
-        }
+        const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
+        state.tasks.splice(safeInsertAt, 0, moved);
         stabilizeTimeSorted();
         normalizeSubtaskFlags(state.tasks);
         state.focusAfterRender = { id: moved.id };
@@ -2577,9 +3034,9 @@ function toggleAndRepositionTask(tasks, idx) {
       const dateLabel = formatWeekLabel(monday);
       const li = document.createElement("li");
       let name;
-      if (offset === 0) name = "now";
-      else if (offset === 1) name = "next week";
-      else if (offset === -1) name = "last week";
+      if (offset === 0) name = `${dateLabel} (now)`;
+      else if (offset === 1) name = `${dateLabel} (next week)`;
+      else if (offset === -1) name = `${dateLabel} (last week)`;
       else name = dateLabel;
       li.textContent = name;
       if (offset === currentOffset) li.classList.add("week-active");
@@ -3090,4 +3547,87 @@ window.addEventListener("load", () => {
   buildThemeFontOptions();
   syncThemeSelect();
 });
+
+/**
+ * Mobile-only: position the .task-row-actions popover as position:fixed so it can
+ * escape the .day-tasks / .week-grid overflow clips. The CSS sets position:fixed
+ * on mobile; this code computes top/left/width from the active task row's rect
+ * and updates on focus, scroll, resize, and class mutations.
+ */
+(function setupMobileActionPanelPositioner() {
+  const MOBILE_MEDIA = window.matchMedia
+    ? window.matchMedia("(max-width: 900px)")
+    : null;
+
+  const ACTIVE_ROW_SELECTOR = [
+    ".task-row:has(.task-text:focus)",
+    ".task-row:has(.task-commit:focus)",
+    ".task-row:has(.task-delete:focus)",
+    ".task-row:has(.task-color:focus)",
+    ".task-row:has(.task-drag-handle:focus)",
+    ".task-row.task-row-reorder-active",
+    ".task-row.task-row-color-open",
+  ].join(", ");
+
+  function isMobile() {
+    return MOBILE_MEDIA ? MOBILE_MEDIA.matches : false;
+  }
+
+  function clearAllPanels() {
+    document.querySelectorAll(".task-row-actions").forEach((panel) => {
+      panel.style.top = "";
+      panel.style.left = "";
+      panel.style.width = "";
+    });
+  }
+
+  function update() {
+    if (!isMobile()) {
+      clearAllPanels();
+      return;
+    }
+    const row = document.querySelector(ACTIVE_ROW_SELECTOR);
+    if (!row) {
+      clearAllPanels();
+      return;
+    }
+    const panel = row.querySelector(":scope > .task-row-actions");
+    if (!panel) return;
+    const rect = row.getBoundingClientRect();
+    panel.style.top = `${rect.bottom + 6}px`;
+    panel.style.left = `${rect.left}px`;
+    panel.style.width = `${rect.width}px`;
+  }
+
+  let rafId = null;
+  function scheduleUpdate() {
+    if (rafId != null) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      update();
+    });
+  }
+
+  document.addEventListener("focusin", scheduleUpdate);
+  document.addEventListener("focusout", () => setTimeout(scheduleUpdate, 0));
+  window.addEventListener("resize", scheduleUpdate);
+  window.addEventListener("scroll", scheduleUpdate, true);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", scheduleUpdate);
+    window.visualViewport.addEventListener("scroll", scheduleUpdate);
+  }
+  if (MOBILE_MEDIA && MOBILE_MEDIA.addEventListener) {
+    MOBILE_MEDIA.addEventListener("change", scheduleUpdate);
+  }
+
+  // Catch class-driven state changes (color picker open, reorder active).
+  const classObserver = new MutationObserver(scheduleUpdate);
+  classObserver.observe(document.body, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+
+  scheduleUpdate();
+})();
 
