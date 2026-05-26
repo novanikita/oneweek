@@ -246,12 +246,42 @@ if (typeof document !== "undefined") {
  * answers. Locally edited state is also persisted here so offline edits survive
  * a reload.
  */
-function generalTasksCacheKey(userId, weekIso) {
-  return `oneweek-cache-general-${userId}-${weekIso}`;
+function generalTasksCacheKey(userId, weekIso, workspaceId) {
+  const ws = workspaceId ? `-${workspaceId}` : "";
+  return `oneweek-cache-general-${userId}-${weekIso}${ws}`;
 }
 
-function dailyTasksCacheKey(userId, dayName, date) {
-  return `oneweek-cache-daily-${userId}-${dayName}-${date}`;
+function dailyTasksCacheKey(userId, dayName, date, workspaceId) {
+  const ws = workspaceId ? `-${workspaceId}` : "";
+  return `oneweek-cache-daily-${userId}-${dayName}-${date}${ws}`;
+}
+
+function getActiveWorkspaceId() {
+  try {
+    return window.oneweekWorkspaces?.getActiveId?.() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function awaitWorkspaceReady(userId) {
+  const ws = window.oneweekWorkspaces;
+  if (!ws) return;
+  if (typeof ws.ensureReadyFor === "function") {
+    try {
+      await ws.ensureReadyFor(userId);
+    } catch {
+      /* already logged */
+    }
+    return;
+  }
+  if (typeof ws.ensureReady === "function") {
+    try {
+      await ws.ensureReady();
+    } catch {
+      /* already logged */
+    }
+  }
 }
 
 function readTasksCache(key) {
@@ -770,17 +800,19 @@ async function supabaseRelocateTaskRow(supabase, userId, rowId, fields) {
   if (!supabase || !userId || rowId == null) {
     return { ok: false, error: new Error("supabaseRelocateTaskRow: missing client, user, or row id") };
   }
+  const update = {
+    type: fields.type,
+    day_name: fields.day_name ?? null,
+    date: fields.date,
+    content: String(fields.content ?? ""),
+    completed: !!fields.completed,
+    is_subtask: !!fields.is_subtask,
+    color: normalizeTaskColor(fields.color),
+  };
+  if (fields.workspace_id) update.workspace_id = fields.workspace_id;
   const { error } = await supabase
     .from("tasks")
-    .update({
-      type: fields.type,
-      day_name: fields.day_name ?? null,
-      date: fields.date,
-      content: String(fields.content ?? ""),
-      completed: !!fields.completed,
-      is_subtask: !!fields.is_subtask,
-      color: normalizeTaskColor(fields.color),
-    })
+    .update(update)
     .eq("id", rowId)
     .eq("user_id", userId);
   if (error) return { ok: false, error };
@@ -1027,17 +1059,21 @@ function toggleAndRepositionTask(tasks, idx) {
       return;
     }
 
+    const workspaceId = getActiveWorkspaceId();
+    const insertPayload = {
+      user_id: authUserId,
+      content,
+      completed,
+      type: "general",
+      date: getVisibleWeekMondayIso(),
+      is_subtask: isSubtask,
+      color,
+    };
+    if (workspaceId) insertPayload.workspace_id = workspaceId;
+
     const { data, error } = await supabase
       .from("tasks")
-      .insert({
-        user_id: authUserId,
-        content,
-        completed,
-        type: "general",
-        date: getVisibleWeekMondayIso(),
-        is_subtask: isSubtask,
-        color,
-      })
+      .insert(insertPayload)
       .select("id")
       .single();
 
@@ -1055,7 +1091,10 @@ function toggleAndRepositionTask(tasks, idx) {
 
   function applyCachedGeneralTasks(weekIso) {
     if (!authUserId) return false;
-    const cached = readTasksCache(generalTasksCacheKey(authUserId, weekIso));
+    const workspaceId = getActiveWorkspaceId();
+    const cached = readTasksCache(
+      generalTasksCacheKey(authUserId, weekIso, workspaceId)
+    );
     if (!cached) return false;
     state.tasks = cached.map((row) => ({
       id: `task-${state.nextId++}`,
@@ -1144,13 +1183,15 @@ function toggleAndRepositionTask(tasks, idx) {
 
     if (getVisibleWeekMondayIso() !== requestedWeekIso) return;
 
-    const { data, error } = await supabase
+    const workspaceId = getActiveWorkspaceId();
+    let query = supabase
       .from("tasks")
       .select("id, content, completed, created_at, is_subtask, color")
       .eq("user_id", authUserId)
       .eq("type", "general")
-      .eq("date", requestedWeekIso)
-      .order("created_at", { ascending: true });
+      .eq("date", requestedWeekIso);
+    if (workspaceId) query = query.eq("workspace_id", workspaceId);
+    const { data, error } = await query.order("created_at", { ascending: true });
 
     if (error) {
       // Keep whatever we already showed from cache — losing it would surprise the user.
@@ -1161,6 +1202,7 @@ function toggleAndRepositionTask(tasks, idx) {
     markNetworkSuccess();
 
     if (getVisibleWeekMondayIso() !== requestedWeekIso) return;
+    if (getActiveWorkspaceId() !== workspaceId) return;
 
     const localBefore = state.tasks;
     const serverTasks = (data ?? []).map((row) => ({
@@ -1175,7 +1217,10 @@ function toggleAndRepositionTask(tasks, idx) {
     state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
     normalizeSubtaskFlags(state.tasks);
     state.tasks = partitionUncheckedBeforeChecked(state.tasks);
-    writeTasksCache(generalTasksCacheKey(authUserId, requestedWeekIso), state.tasks);
+    writeTasksCache(
+      generalTasksCacheKey(authUserId, requestedWeekIso, workspaceId),
+      state.tasks
+    );
 
     // Network is back: push any local edits that were waiting.
     for (const t of state.tasks) {
@@ -1196,6 +1241,7 @@ function toggleAndRepositionTask(tasks, idx) {
       return;
     }
 
+    await awaitWorkspaceReady(authUserId);
     await loadTasksForUser();
     render();
   }
@@ -1318,7 +1364,11 @@ function toggleAndRepositionTask(tasks, idx) {
     // edits) survive without a network round-trip.
     if (authUserId) {
       writeTasksCache(
-        generalTasksCacheKey(authUserId, getVisibleWeekMondayIso()),
+        generalTasksCacheKey(
+          authUserId,
+          getVisibleWeekMondayIso(),
+          getActiveWorkspaceId()
+        ),
         state.tasks
       );
     }
@@ -1851,6 +1901,7 @@ function toggleAndRepositionTask(tasks, idx) {
           completed: checked,
           is_subtask: sub,
           color,
+          workspace_id: getActiveWorkspaceId(),
         });
         if (!ok) {
           console.error("Supabase move-to-general failed:", error);
@@ -1897,6 +1948,14 @@ function toggleAndRepositionTask(tasks, idx) {
   });
 
   window.addEventListener(WEEK_CHANGE_EVENT, () => {
+    if (!isAuthed || !authUserId) return;
+    void (async () => {
+      await loadTasksForUser();
+      render();
+    })();
+  });
+
+  window.addEventListener("workspace-change", () => {
     if (!isAuthed || !authUserId) return;
     void (async () => {
       await loadTasksForUser();
@@ -2079,18 +2138,22 @@ function toggleAndRepositionTask(tasks, idx) {
         return;
       }
 
+      const workspaceId = getActiveWorkspaceId();
+      const insertPayload = {
+        user_id: currentUserId,
+        content,
+        completed,
+        type: "daily",
+        day_name: dayMeta.dayName,
+        date: dayMeta.date,
+        is_subtask: isSubtask,
+        color,
+      };
+      if (workspaceId) insertPayload.workspace_id = workspaceId;
+
       const { data, error } = await supabase
         .from("tasks")
-        .insert({
-          user_id: currentUserId,
-          content,
-          completed,
-          type: "daily",
-          day_name: dayMeta.dayName,
-          date: dayMeta.date,
-          is_subtask: isSubtask,
-          color,
-        })
+        .insert(insertPayload)
         .select("id")
         .single();
 
@@ -2111,8 +2174,9 @@ function toggleAndRepositionTask(tasks, idx) {
 
     function applyCachedDayTasks() {
       if (!currentUserId) return false;
+      const workspaceId = getActiveWorkspaceId();
       const cached = readTasksCache(
-        dailyTasksCacheKey(currentUserId, dayMeta.dayName, dayMeta.date)
+        dailyTasksCacheKey(currentUserId, dayMeta.dayName, dayMeta.date, workspaceId)
       );
       if (!cached) return false;
       state.tasks = cached.map((row) => ({
@@ -2171,6 +2235,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
       const cachedDayName = dayMeta.dayName;
       const cachedDate = dayMeta.date;
+      const cachedWorkspaceId = getActiveWorkspaceId();
 
       // Paint the cache before the network call. If there's nothing cached for
       // this day, clear the list so we never show stale data from another day.
@@ -2178,14 +2243,15 @@ function toggleAndRepositionTask(tasks, idx) {
       if (!hadCache) state.tasks = [];
       render();
 
-      const { data, error } = await supabase
+      let dayQuery = supabase
         .from("tasks")
         .select("id, content, completed, created_at, is_subtask, color")
         .eq("user_id", currentUserId)
         .eq("type", "daily")
         .eq("day_name", cachedDayName)
-        .eq("date", cachedDate)
-        .order("created_at", { ascending: true });
+        .eq("date", cachedDate);
+      if (cachedWorkspaceId) dayQuery = dayQuery.eq("workspace_id", cachedWorkspaceId);
+      const { data, error } = await dayQuery.order("created_at", { ascending: true });
 
       if (error) {
         markNetworkFailure(error);
@@ -2194,9 +2260,11 @@ function toggleAndRepositionTask(tasks, idx) {
       }
       markNetworkSuccess();
 
-      // If the user navigated to another week while the request was in flight,
-      // dayMeta has already changed — don't clobber the fresh state.
+      // If the user navigated to another week (or workspace) while the request
+      // was in flight, dayMeta/active id has already changed — don't clobber
+      // the fresh state.
       if (dayMeta.dayName !== cachedDayName || dayMeta.date !== cachedDate) return;
+      if (getActiveWorkspaceId() !== cachedWorkspaceId) return;
 
       const localBefore = state.tasks;
       const serverTasks = (data ?? []).map((row) => ({
@@ -2212,7 +2280,7 @@ function toggleAndRepositionTask(tasks, idx) {
       state.tasks = partitionUncheckedBeforeChecked(state.tasks);
       normalizeSubtaskFlags(state.tasks);
       writeTasksCache(
-        dailyTasksCacheKey(currentUserId, cachedDayName, cachedDate),
+        dailyTasksCacheKey(currentUserId, cachedDayName, cachedDate, cachedWorkspaceId),
         state.tasks
       );
 
@@ -2331,7 +2399,12 @@ function toggleAndRepositionTask(tasks, idx) {
       // Keep the cache aligned with the live view (offline edits survive reload).
       if (isAuthed && currentUserId) {
         writeTasksCache(
-          dailyTasksCacheKey(currentUserId, dayMeta.dayName, dayMeta.date),
+          dailyTasksCacheKey(
+            currentUserId,
+            dayMeta.dayName,
+            dayMeta.date,
+            getActiveWorkspaceId()
+          ),
           state.tasks
         );
       }
@@ -2818,6 +2891,7 @@ function toggleAndRepositionTask(tasks, idx) {
             completed: checked,
             is_subtask: sub,
             color,
+            workspace_id: getActiveWorkspaceId(),
           });
           if (!ok) {
             console.error("Supabase move-to-day failed:", error);
@@ -2864,6 +2938,7 @@ function toggleAndRepositionTask(tasks, idx) {
         return;
       }
 
+      await awaitWorkspaceReady(userId);
       await loadTasksForDay();
       stabilizeTimeSorted();
       render();
@@ -2882,6 +2957,13 @@ function toggleAndRepositionTask(tasks, idx) {
 
     window.addEventListener(WEEK_CHANGE_EVENT, async () => {
       dayMeta = getDayMeta(dayName);
+      if (!isAuthed) return;
+      await loadTasksForDay();
+      stabilizeTimeSorted();
+      render();
+    });
+
+    window.addEventListener("workspace-change", async () => {
       if (!isAuthed) return;
       await loadTasksForDay();
       stabilizeTimeSorted();

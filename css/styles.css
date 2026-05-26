@@ -168,6 +168,158 @@ body.week-offset-away .task-delete {
   display: none !important;
 }
 
+.workspace-tabs {
+  --ws-tab-radius: 0.4em;
+  --ws-tab-border: 0.07em;
+  --ws-tab-gap: 0.35em;
+  display: inline-flex;
+  align-items: stretch;
+  gap: var(--ws-tab-gap);
+  min-width: 0;
+  max-width: 100%;
+  height: var(--header-bar-height);
+  line-height: 1;
+}
+
+.workspace-tabs[hidden] {
+  display: none !important;
+}
+
+.workspace-tabs-list {
+  display: inline-flex;
+  align-items: stretch;
+  gap: var(--ws-tab-gap);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  max-width: 100%;
+}
+
+.workspace-tabs-list::-webkit-scrollbar {
+  display: none;
+}
+
+.workspace-tab,
+.workspace-tabs-add {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 0.7em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  box-sizing: border-box;
+  border: var(--ws-tab-border) solid
+    color-mix(in srgb, var(--color-text) 35%, transparent);
+  border-radius: var(--ws-tab-radius);
+  padding: 0 0.85em;
+  transition: border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+.workspace-tab {
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-tab:hover,
+.workspace-tabs-add:hover {
+  color: var(--color-text);
+  border-color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.workspace-tab.is-active,
+.workspace-tab.is-active:hover {
+  color: var(--color-text);
+  border-color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.workspace-tab.is-dragging {
+  opacity: 0.35;
+}
+
+.workspace-tab.is-drop-before {
+  box-shadow: -0.2em 0 0 -0.07em currentColor;
+}
+
+.workspace-tab.is-drop-after {
+  box-shadow: 0.2em 0 0 -0.07em currentColor;
+}
+
+.workspace-tab-edit {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  width: var(--workspace-tab-edit-width, 6em);
+  line-height: 1;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  font-weight: inherit;
+}
+
+.workspace-tabs-add {
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  font-size: 1em;
+  font-weight: 400;
+  letter-spacing: 0;
+  padding: 0;
+  width: var(--header-bar-height);
+  aspect-ratio: 1 / 1;
+}
+
+.workspace-tabs-add .icon-themed-plus {
+  width: 0.7em;
+  height: 0.7em;
+}
+
+.workspace-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background);
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.4em;
+  padding: 0.25em 0;
+  min-width: 7em;
+  box-shadow: 0 0.2em 0.6em color-mix(in srgb, var(--color-text) 15%, transparent);
+  font: inherit;
+  line-height: 1;
+}
+
+.workspace-menu-item {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0.4em 0.7em;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.workspace-menu-item:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+.workspace-menu-item[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .panel {
   display: flex;
   flex-direction: column;
@@ -255,6 +407,11 @@ h1 {
 .icon-themed.icon-themed-close {
   mask: url("../cross.svg") center / contain no-repeat;
   -webkit-mask: url("../cross.svg") center / contain no-repeat;
+}
+
+.icon-themed.icon-themed-plus {
+  mask: url("../plus.svg") center / contain no-repeat;
+  -webkit-mask: url("../plus.svg") center / contain no-repeat;
 }
 
 .week-nav-btn--next .icon-themed-arrow {

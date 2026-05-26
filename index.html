@@ -45,7 +45,24 @@
           <button type="button" class="header-text-btn" id="week-go-this-week" hidden>
             go to this week
           </button>
-          <h1 class="panel-title">oneweek by <a href="https://nikitanova.com/en/index.html" class="panel-title-link" target="_blank" rel="noopener">nova</a></h1>
+          <div
+            class="workspace-tabs"
+            id="workspace-tabs"
+            role="tablist"
+            aria-label="Workspaces"
+            hidden
+          >
+            <button
+              type="button"
+              class="workspace-tabs-add"
+              id="workspace-tabs-add"
+              aria-label="Add workspace"
+              title="Add workspace"
+            >
+              <span class="icon-themed icon-themed-plus" aria-hidden="true"></span>
+            </button>
+            <div class="workspace-tabs-list" id="workspace-tabs-list"></div>
+          </div>
         </div>
       </header>
       <section class="panel week-panel" aria-label="Week">
@@ -215,6 +232,8 @@
       </div>
     </nav>
 
+    <script src="./js/workspaces.js"></script>
     <script src="./js/script.js"></script>
+    <script src="./js/workspace-tabs.js"></script>
   </body>
 </html>
