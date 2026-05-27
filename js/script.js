@@ -152,7 +152,7 @@ if (typeof window !== "undefined") {
   }
 }
 
-function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist failed:") {
+function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist failed:", onSettled = null) {
   const pendingPersist = new Map();
   return async function persistTask(task) {
     if (!task?.id) return;
@@ -184,6 +184,15 @@ function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist
         // Keep `_dirty` so the next flush / retry picks the task up again.
         if (writeFailed) task._dirty = true;
         else task._dirty = false;
+      }
+      // Let the panel refresh its on-disk cache so a brand-new row's freshly
+      // assigned dbId is captured. Without this, a reload right after creating
+      // a task (before the next render call) restores the row from cache with
+      // dbId=null and the next server fetch re-introduces it as a duplicate.
+      if (!writeFailed && typeof onSettled === "function") {
+        try { onSettled(task); } catch (err) {
+          console.error("persistTask onSettled failed:", err);
+        }
       }
     }
   };
@@ -296,14 +305,66 @@ function readTasksCache(key) {
   }
 }
 
+function syncPositionsFromArray(tasks) {
+  for (let i = 0; i < tasks.length; i++) {
+    tasks[i].position = i;
+  }
+}
+
+function taskIndexInList(tasks, task) {
+  if (!task?.id || !tasks) return -1;
+  return tasks.findIndex((t) => t.id === task.id);
+}
+
+/** Push 0..n-1 positions for persisted rows (after drag, toggle, paste, etc.). */
+async function persistTaskPositions(supabase, userId, tasks) {
+  if (!supabase || !userId || !tasks?.length) return;
+  syncPositionsFromArray(tasks);
+  const updates = tasks
+    .map((t, position) => ({ dbId: t.dbId, position }))
+    .filter((u) => u.dbId != null);
+  if (updates.length === 0) return;
+
+  const results = await Promise.all(
+    updates.map(({ dbId, position }) =>
+      supabase
+        .from("tasks")
+        .update({ position })
+        .eq("id", dbId)
+        .eq("user_id", userId)
+    )
+  );
+  const error = results.find((r) => r.error)?.error;
+  if (error) {
+    markNetworkFailure(error);
+    throw error;
+  }
+  markNetworkSuccess();
+}
+
+function createPositionPersistScheduler(supabase, getUserId, getTasks) {
+  let chain = Promise.resolve();
+  return function schedulePersistTaskPositions() {
+    const userId = getUserId();
+    const tasks = getTasks();
+    if (!supabase || !userId || !tasks?.length) return;
+    chain = chain
+      .then(() => persistTaskPositions(supabase, userId, tasks))
+      .catch((err) => {
+        console.error("Supabase position persist failed:", err);
+      });
+  };
+}
+
 function writeTasksCache(key, tasks) {
   try {
-    const serializable = (tasks || []).map((t) => ({
+    const serializable = (tasks || []).map((t, i) => ({
       dbId: t.dbId ?? null,
       text: String(t.text ?? ""),
       checked: !!t.checked,
       subtask: !!t.subtask,
       color: normalizeTaskColor(t.color),
+      position: typeof t.position === "number" ? t.position : i,
       // `_dirty` survives reload so unsynced offline edits are retried.
       dirty: !!t._dirty,
     }));
@@ -810,6 +871,7 @@ async function supabaseRelocateTaskRow(supabase, userId, rowId, fields) {
     color: normalizeTaskColor(fields.color),
   };
   if (fields.workspace_id) update.workspace_id = fields.workspace_id;
+  if (typeof fields.position === "number") update.position = fields.position;
   const { error } = await supabase
     .from("tasks")
     .update(update)
@@ -1038,6 +1100,9 @@ function toggleAndRepositionTask(tasks, idx) {
       return;
     }
 
+    const idx = taskIndexInList(state.tasks, task);
+    const position = idx >= 0 ? idx : state.tasks.length;
+
     // If it exists already, update it. Otherwise insert a new row.
     if (dbId) {
       // Only content flags here. Do not set type/date/day_name on update — a stale
@@ -1050,6 +1115,7 @@ function toggleAndRepositionTask(tasks, idx) {
           completed,
           is_subtask: isSubtask,
           color,
+          position,
         })
         .eq("id", dbId)
         .eq("user_id", authUserId);
@@ -1072,6 +1138,7 @@ function toggleAndRepositionTask(tasks, idx) {
       date: getVisibleWeekMondayIso(),
       is_subtask: isSubtask,
       color,
+      position,
     };
     if (workspaceId) insertPayload.workspace_id = workspaceId;
 
@@ -1089,9 +1156,28 @@ function toggleAndRepositionTask(tasks, idx) {
 
     markNetworkSuccess();
     task.dbId = data?.id ?? null;
+    task.position = position;
   }
 
-  const persistTask = createPersistTask(insertOrUpdateTaskInDb, "Supabase persist failed:");
+  const persistTask = createPersistTask(
+    insertOrUpdateTaskInDb,
+    "Supabase persist failed:",
+    () => {
+      if (!authUserId) return;
+      const wsId = getActiveWorkspaceId();
+      if (!wsId || tasksWorkspaceId !== wsId) return;
+      writeTasksCache(
+        generalTasksCacheKey(authUserId, getVisibleWeekMondayIso(), wsId),
+        state.tasks
+      );
+    }
+  );
+
+  const schedulePersistTaskPositions = createPositionPersistScheduler(
+    supabase,
+    () => authUserId,
+    () => state.tasks
+  );
 
   function applyCachedGeneralTasks(weekIso) {
     if (!authUserId) return false;
@@ -1100,68 +1186,122 @@ function toggleAndRepositionTask(tasks, idx) {
       generalTasksCacheKey(authUserId, weekIso, workspaceId)
     );
     if (!cached) return false;
-    state.tasks = cached.map((row) => ({
+    state.tasks = cached.map((row, i) => ({
       id: `task-${state.nextId++}`,
       dbId: row.dbId ?? null,
       text: row.text ?? "",
       checked: !!row.checked,
       subtask: !!row.subtask,
       color: normalizeTaskColor(row.color),
+      position: typeof row.position === "number" ? row.position : i,
       _dirty: !!row.dirty,
     }));
     normalizeSubtaskFlags(state.tasks);
-    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
     return true;
   }
 
   /**
    * Combine the authoritative server snapshot with anything the user changed
-   * locally that hasn't been persisted yet. Local edits win for content/state
-   * because they're newer than the server row; brand-new drafts (no dbId) get
-   * appended so they survive a reload while offline.
+   * locally that hasn't been persisted yet, while preserving the user's
+   * client-side ordering.
+   *
+   * Why client-side order is the source of truth: the `tasks` table has no
+   * sort column, so the server can only return rows by `created_at`. Honouring
+   * that order would erase any drag-and-drop reorder the user did, which is
+   * exactly the "tasks swap places after reload / workspace switch" bug.
+   *
+   * Algorithm:
+   *   1. Walk `localBefore` in its existing order.
+   *      - If the row exists on the server, emit it at this position; use
+   *        local content if the row is `_dirty`, otherwise use the fresh
+   *        server snapshot.
+   *      - Dirty drafts without a dbId (created locally while offline or
+   *        mid-persist) are emitted in place. If a server row has matching
+   *        content, the orphan is merged into that row instead of being
+   *        duplicated — this fixes the "ghost duplicate after reload" bug
+   *        where the create succeeded server-side but the cache still had
+   *        `dbId=null` when the page reloaded.
+   *   2. Append any server rows we haven't placed yet (e.g. added on another
+   *      device) at the end so they aren't lost.
    */
   function mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore) {
-    const serverDbIds = new Set(
-      serverTasks.map((t) => t.dbId).filter(Boolean)
-    );
-    const localByDbId = new Map();
-    const localOrphans = [];
-    for (const t of localBefore) {
-      if (!t._dirty) continue;
-      if (t.dbId) {
-        if (!serverDbIds.has(t.dbId)) continue;
-        localByDbId.set(t.dbId, t);
-      } else if (!isTaskEmptyText(t.text)) {
-        localOrphans.push(t);
+    const serverByDbId = new Map();
+    for (const s of serverTasks) {
+      if (s.dbId) serverByDbId.set(s.dbId, s);
+    }
+
+    const usedDbIds = new Set();
+    const result = [];
+
+    function contentKey(t) {
+      return `${String(t.text ?? "").trim()}|${t.checked ? 1 : 0}|${t.subtask ? 1 : 0}`;
+    }
+    const unusedServerByContent = new Map();
+    for (const srv of serverTasks) {
+      if (!srv.dbId) continue;
+      const k = contentKey(srv);
+      if (!unusedServerByContent.has(k)) unusedServerByContent.set(k, []);
+      unusedServerByContent.get(k).push(srv);
+    }
+
+    for (const local of localBefore) {
+      if (local.dbId) {
+        const srv = serverByDbId.get(local.dbId);
+        if (!srv) {
+          // Row vanished on the server (e.g. deleted from another device).
+          if (local._dirty && !isTaskEmptyText(local.text)) {
+            result.push({ ...local, dbId: null });
+            const bucket = unusedServerByContent.get(contentKey(local));
+            if (bucket && bucket.length) bucket.shift();
+          }
+          continue;
+        }
+        usedDbIds.add(local.dbId);
+        const bucket = unusedServerByContent.get(contentKey(srv));
+        if (bucket) {
+          const idx = bucket.indexOf(srv);
+          if (idx !== -1) bucket.splice(idx, 1);
+        }
+        if (local._dirty) {
+          result.push({
+            ...srv,
+            id: local.id,
+            text: local.text,
+            checked: local.checked,
+            subtask: local.subtask,
+            color: normalizeTaskColor(local.color),
+            _dirty: true,
+          });
+        } else {
+          result.push({ ...srv, id: local.id });
+        }
+      } else if (!isTaskEmptyText(local.text)) {
+        const k = contentKey(local);
+        const bucket = unusedServerByContent.get(k);
+        const match = bucket && bucket.length ? bucket.shift() : null;
+        if (match) {
+          usedDbIds.add(match.dbId);
+          result.push({ ...match, id: local.id });
+        } else if (local._dirty) {
+          result.push({
+            id: local.id,
+            dbId: null,
+            text: local.text,
+            checked: !!local.checked,
+            subtask: !!local.subtask,
+            color: normalizeTaskColor(local.color),
+            _dirty: true,
+          });
+        }
       }
     }
-    if (localByDbId.size === 0 && localOrphans.length === 0) {
-      return serverTasks;
+
+    for (const srv of serverTasks) {
+      if (!srv.dbId || usedDbIds.has(srv.dbId)) continue;
+      result.push(srv);
     }
-    const merged = serverTasks.map((srv) => {
-      const local = localByDbId.get(srv.dbId);
-      if (!local) return srv;
-      return {
-        ...srv,
-        text: local.text,
-        checked: local.checked,
-        subtask: local.subtask,
-        color: normalizeTaskColor(local.color),
-        _dirty: true,
-      };
-    });
-    for (const orphan of localOrphans) {
-      merged.push({
-        id: `task-${state.nextId++}`,
-        dbId: null,
-        text: orphan.text,
-        checked: !!orphan.checked,
-        subtask: !!orphan.subtask,
-        color: normalizeTaskColor(orphan.color),
-        _dirty: true,
-      });
-    }
-    return merged;
+
+    return result;
   }
 
   async function loadTasksForUser() {
@@ -1200,12 +1340,14 @@ function toggleAndRepositionTask(tasks, idx) {
     const workspaceId = getActiveWorkspaceId();
     let query = supabase
       .from("tasks")
-      .select("id, content, completed, created_at, is_subtask, color")
+      .select("id, content, completed, created_at, is_subtask, color, position")
       .eq("user_id", authUserId)
       .eq("type", "general")
       .eq("date", requestedWeekIso);
     if (workspaceId) query = query.eq("workspace_id", workspaceId);
-    const { data, error } = await query.order("created_at", { ascending: true });
+    const { data, error } = await query
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true });
 
     if (error) {
       // Keep whatever we already showed from cache — losing it would surprise the user.
@@ -1227,11 +1369,12 @@ function toggleAndRepositionTask(tasks, idx) {
       checked: !!row.completed,
       subtask: !!row.is_subtask,
       color: normalizeTaskColor(row.color),
+      position: row.position ?? 0,
       _dirty: false,
     }));
     state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
     normalizeSubtaskFlags(state.tasks);
-    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    syncPositionsFromArray(state.tasks);
     tasksWorkspaceId = workspaceId;
     writeTasksCache(
       generalTasksCacheKey(authUserId, requestedWeekIso, workspaceId),
@@ -1292,6 +1435,7 @@ function toggleAndRepositionTask(tasks, idx) {
     if (task.dbId) void deleteTaskFromDb(task);
     state.focusAfterRender = null;
     state.tasks.splice(idx, 1);
+    schedulePersistTaskPositions();
     render();
   }
 
@@ -1325,6 +1469,7 @@ function toggleAndRepositionTask(tasks, idx) {
   async function commitTask(taskId) {
     const { needRender } = await syncTaskFromInput(taskId);
     state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    schedulePersistTaskPositions();
     render();
     return !needRender;
   }
@@ -1536,6 +1681,7 @@ function toggleAndRepositionTask(tasks, idx) {
               await persistTask(task);
             })();
           }
+          schedulePersistTaskPositions();
           state.focusAfterRender = {
             id: task.id,
             start: e.target.selectionStart,
@@ -1593,12 +1739,7 @@ function toggleAndRepositionTask(tasks, idx) {
         if (!moved) return;
 
         normalizeSubtaskFlags(state.tasks);
-        if (moved.dbId && !isTaskEmptyText(moved.text)) {
-          markTaskDirty(moved);
-          void (async () => {
-            await persistTask(moved);
-          })();
-        }
+        schedulePersistTaskPositions();
 
         state.focusAfterRender = { id: moved.id };
         render();
@@ -1658,8 +1799,7 @@ function toggleAndRepositionTask(tasks, idx) {
   function toggleCheckedAndReorder(id, caret) {
     const idx = getTaskIndex(id);
     if (idx === -1) return;
-    const task = state.tasks[idx];
-    task.checked = !task.checked;
+    const task = toggleAndRepositionTask(state.tasks, idx);
 
     state.focusAfterRender = {
       id: task.id,
@@ -1673,6 +1813,7 @@ function toggleAndRepositionTask(tasks, idx) {
         await persistTask(task);
       })();
     }
+    schedulePersistTaskPositions();
     render();
   }
 
@@ -1697,6 +1838,7 @@ function toggleAndRepositionTask(tasks, idx) {
     const focusId =
       toInsert.length > 0 ? state.tasks[pasteInsertAt]?.id ?? currentId : currentId;
     state.focusAfterRender = { id: focusId };
+    schedulePersistTaskPositions();
     render();
   }
 
@@ -1916,6 +2058,8 @@ function toggleAndRepositionTask(tasks, idx) {
       const sub = !!payload.subtask;
       const color = normalizeTaskColor(payload.color);
 
+      const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
+
       if (payload.dbId) {
         const { ok, error } = await supabaseRelocateTaskRow(supabase, authUserId, payload.dbId, {
           type: "general",
@@ -1926,6 +2070,7 @@ function toggleAndRepositionTask(tasks, idx) {
           is_subtask: sub,
           color,
           workspace_id: getActiveWorkspaceId(),
+          position: safeInsertAt,
         });
         if (!ok) {
           console.error("Supabase move-to-general failed:", error);
@@ -1934,8 +2079,8 @@ function toggleAndRepositionTask(tasks, idx) {
       }
 
       const moved = createTask(text, checked, payload.dbId || null, sub, color);
-      const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
       state.tasks.splice(safeInsertAt, 0, moved);
+      schedulePersistTaskPositions();
       state.focusAfterRender = { id: moved.id };
       render();
 
@@ -2142,10 +2287,19 @@ function toggleAndRepositionTask(tasks, idx) {
         return;
       }
 
+      const idx = taskIndexInList(state.tasks, task);
+      const position = idx >= 0 ? idx : state.tasks.length;
+
       if (dbId) {
         const { error } = await supabase
           .from("tasks")
-          .update({ content, completed, is_subtask: isSubtask, color })
+          .update({
+            content,
+            completed,
+            is_subtask: isSubtask,
+            color,
+            position,
+          })
           .eq("id", dbId)
           .eq("user_id", currentUserId);
 
@@ -2168,6 +2322,7 @@ function toggleAndRepositionTask(tasks, idx) {
         date: dayMeta.date,
         is_subtask: isSubtask,
         color,
+        position,
       };
       if (workspaceId) insertPayload.workspace_id = workspaceId;
 
@@ -2185,11 +2340,32 @@ function toggleAndRepositionTask(tasks, idx) {
 
       markNetworkSuccess();
       task.dbId = data?.id ?? null;
+      task.position = position;
     }
 
     const persistTask = createPersistTask(
       insertOrUpdateTaskInDb,
-      "Supabase daily persist failed:"
+      "Supabase daily persist failed:",
+      () => {
+        if (!currentUserId) return;
+        const wsId = getActiveWorkspaceId();
+        if (!wsId || tasksWorkspaceId !== wsId) return;
+        writeTasksCache(
+          dailyTasksCacheKey(
+            currentUserId,
+            dayMeta.dayName,
+            dayMeta.date,
+            wsId
+          ),
+          state.tasks
+        );
+      }
+    );
+
+    const schedulePersistTaskPositions = createPositionPersistScheduler(
+      supabase,
+      () => currentUserId,
+      () => state.tasks
     );
 
     function applyCachedDayTasks() {
@@ -2199,62 +2375,100 @@ function toggleAndRepositionTask(tasks, idx) {
         dailyTasksCacheKey(currentUserId, dayMeta.dayName, dayMeta.date, workspaceId)
       );
       if (!cached) return false;
-      state.tasks = cached.map((row) => ({
+      state.tasks = cached.map((row, i) => ({
         id: `d-${daySlugForId}-${state.nextId++}`,
         dbId: row.dbId ?? null,
         text: moveTimeToStart(row.text ?? ""),
         checked: !!row.checked,
         subtask: !!row.subtask,
         color: normalizeTaskColor(row.color),
+        position: typeof row.position === "number" ? row.position : i,
         _dirty: !!row.dirty,
       }));
-      state.tasks = partitionUncheckedBeforeChecked(state.tasks);
       normalizeSubtaskFlags(state.tasks);
       return true;
     }
 
+    /** See the general-panel version above for the rationale; this is the
+     *  daily-panel mirror. Daily tasks also pass through `stabilizeTimeSorted`
+     *  after the merge, so timed rows still snap into the time-sorted order. */
     function mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore) {
-      const serverDbIds = new Set(
-        serverTasks.map((t) => t.dbId).filter(Boolean)
-      );
-      const localByDbId = new Map();
-      const localOrphans = [];
-      for (const t of localBefore) {
-        if (!t._dirty) continue;
-        if (t.dbId) {
-          if (!serverDbIds.has(t.dbId)) continue;
-          localByDbId.set(t.dbId, t);
-        } else if (!isTaskEmptyText(t.text)) {
-          localOrphans.push(t);
+      const serverByDbId = new Map();
+      for (const s of serverTasks) {
+        if (s.dbId) serverByDbId.set(s.dbId, s);
+      }
+
+      const usedDbIds = new Set();
+      const result = [];
+
+      function contentKey(t) {
+        return `${moveTimeToStart(String(t.text ?? "")).trim()}|${t.checked ? 1 : 0}|${t.subtask ? 1 : 0}`;
+      }
+      const unusedServerByContent = new Map();
+      for (const srv of serverTasks) {
+        if (!srv.dbId) continue;
+        const k = contentKey(srv);
+        if (!unusedServerByContent.has(k)) unusedServerByContent.set(k, []);
+        unusedServerByContent.get(k).push(srv);
+      }
+
+      for (const local of localBefore) {
+        if (local.dbId) {
+          const srv = serverByDbId.get(local.dbId);
+          if (!srv) {
+            if (local._dirty && !isTaskEmptyText(local.text)) {
+              result.push({ ...local, dbId: null });
+              const bucket = unusedServerByContent.get(contentKey(local));
+              if (bucket && bucket.length) bucket.shift();
+            }
+            continue;
+          }
+          usedDbIds.add(local.dbId);
+          const bucket = unusedServerByContent.get(contentKey(srv));
+          if (bucket) {
+            const idx = bucket.indexOf(srv);
+            if (idx !== -1) bucket.splice(idx, 1);
+          }
+          if (local._dirty) {
+            result.push({
+              ...srv,
+              id: local.id,
+              text: local.text,
+              checked: local.checked,
+              subtask: local.subtask,
+              color: normalizeTaskColor(local.color),
+              _dirty: true,
+            });
+          } else {
+            result.push({ ...srv, id: local.id });
+          }
+        } else if (!isTaskEmptyText(local.text)) {
+          const k = contentKey(local);
+          const bucket = unusedServerByContent.get(k);
+          const match = bucket && bucket.length ? bucket.shift() : null;
+          if (match) {
+            usedDbIds.add(match.dbId);
+            result.push({ ...match, id: local.id });
+          } else if (local._dirty) {
+            result.push({
+              id: local.id,
+              dbId: null,
+              text: local.text,
+              checked: !!local.checked,
+              subtask: !!local.subtask,
+              color: normalizeTaskColor(local.color),
+              _dirty: true,
+            });
+          }
         }
       }
-      if (localByDbId.size === 0 && localOrphans.length === 0) {
-        return serverTasks;
+
+      for (const srv of serverTasks) {
+        if (!srv.dbId || usedDbIds.has(srv.dbId)) continue;
+        result.push(srv);
       }
-      const merged = serverTasks.map((srv) => {
-        const local = localByDbId.get(srv.dbId);
-        if (!local) return srv;
-        return {
-          ...srv,
-          text: local.text,
-          checked: local.checked,
-          subtask: local.subtask,
-          color: normalizeTaskColor(local.color),
-          _dirty: true,
-        };
-      });
-      for (const orphan of localOrphans) {
-        merged.push({
-          id: `d-${daySlugForId}-${state.nextId++}`,
-          dbId: null,
-          text: orphan.text,
-          checked: !!orphan.checked,
-          subtask: !!orphan.subtask,
-          color: normalizeTaskColor(orphan.color),
-          _dirty: true,
-        });
-      }
-      return merged;
+
+      return result;
     }
 
     async function loadTasksForDay() {
@@ -2274,13 +2488,15 @@ function toggleAndRepositionTask(tasks, idx) {
 
       let dayQuery = supabase
         .from("tasks")
-        .select("id, content, completed, created_at, is_subtask, color")
+        .select("id, content, completed, created_at, is_subtask, color, position")
         .eq("user_id", currentUserId)
         .eq("type", "daily")
         .eq("day_name", cachedDayName)
         .eq("date", cachedDate);
       if (cachedWorkspaceId) dayQuery = dayQuery.eq("workspace_id", cachedWorkspaceId);
-      const { data, error } = await dayQuery.order("created_at", { ascending: true });
+      const { data, error } = await dayQuery
+        .order("position", { ascending: true })
+        .order("created_at", { ascending: true });
 
       if (error) {
         markNetworkFailure(error);
@@ -2304,12 +2520,13 @@ function toggleAndRepositionTask(tasks, idx) {
         checked: !!row.completed,
         subtask: !!row.is_subtask,
         color: normalizeTaskColor(row.color),
+        position: row.position ?? 0,
         _dirty: false,
       }));
       state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
-      state.tasks = partitionUncheckedBeforeChecked(state.tasks);
       normalizeSubtaskFlags(state.tasks);
       stabilizeTimeSorted();
+      syncPositionsFromArray(state.tasks);
       tasksWorkspaceId = cachedWorkspaceId;
       writeTasksCache(
         dailyTasksCacheKey(currentUserId, cachedDayName, cachedDate, cachedWorkspaceId),
@@ -2347,6 +2564,7 @@ function toggleAndRepositionTask(tasks, idx) {
       state.focusAfterRender = null;
       state.tasks.splice(idx, 1);
       stabilizeTimeSorted();
+      schedulePersistTaskPositions();
       render();
     }
 
@@ -2374,6 +2592,7 @@ function toggleAndRepositionTask(tasks, idx) {
       }
       // Time-tasks differ only by ordering: sort timed tasks among themselves on commit.
       stabilizeTimeSorted();
+      schedulePersistTaskPositions();
       const taskAfterSort = state.tasks.find((t) => t.id === taskId);
       if (!taskAfterSort) return { needRender: true };
       // Do not await: keep commit/reorder instant; persist runs in background.
@@ -2582,6 +2801,7 @@ function toggleAndRepositionTask(tasks, idx) {
                 await persistTask(task);
               })();
             }
+            schedulePersistTaskPositions();
             state.focusAfterRender = {
               id: task.id,
               start: e.target.selectionStart,
@@ -2645,12 +2865,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
           stabilizeTimeSorted();
           normalizeSubtaskFlags(state.tasks);
-          if (moved.dbId && !isTaskEmptyText(moved.text)) {
-            markTaskDirty(moved);
-            void (async () => {
-              await persistTask(moved);
-            })();
-          }
+          schedulePersistTaskPositions();
 
           state.focusAfterRender = { id: moved.id };
           render();
@@ -2701,14 +2916,14 @@ function toggleAndRepositionTask(tasks, idx) {
     function toggleChecked(id) {
       const idx = getTaskIndex(id);
       if (idx === -1) return;
-      const task = state.tasks[idx];
-      task.checked = !task.checked;
+      const task = toggleAndRepositionTask(state.tasks, idx);
       if (!isTaskEmptyText(task.text)) {
         markTaskDirty(task);
         void (async () => {
           await persistTask(task);
         })();
       }
+      schedulePersistTaskPositions();
       render();
     }
 
@@ -2917,6 +3132,8 @@ function toggleAndRepositionTask(tasks, idx) {
         const sub = !!payload.subtask;
         const color = normalizeTaskColor(payload.color);
 
+        const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
+
         if (payload.dbId) {
           const { ok, error } = await supabaseRelocateTaskRow(supabase, currentUserId, payload.dbId, {
             type: "daily",
@@ -2927,6 +3144,7 @@ function toggleAndRepositionTask(tasks, idx) {
             is_subtask: sub,
             color,
             workspace_id: getActiveWorkspaceId(),
+            position: safeInsertAt,
           });
           if (!ok) {
             console.error("Supabase move-to-day failed:", error);
@@ -2935,10 +3153,10 @@ function toggleAndRepositionTask(tasks, idx) {
         }
 
         const moved = createTask(textNorm, checked, payload.dbId || null, sub, color);
-        const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
         state.tasks.splice(safeInsertAt, 0, moved);
         stabilizeTimeSorted();
         normalizeSubtaskFlags(state.tasks);
+        schedulePersistTaskPositions();
         state.focusAfterRender = { id: moved.id };
         render();
 
