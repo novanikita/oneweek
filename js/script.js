@@ -934,6 +934,10 @@ function toggleAndRepositionTask(tasks, idx) {
   const supabase = window.supabaseClient;
   let authUserId = null;
   let isAuthed = false;
+  /** Bumps on each load; stale in-flight responses are ignored. */
+  let generalLoadGen = 0;
+  /** Workspace id last applied from server/cache; guards render() cache writes. */
+  let tasksWorkspaceId = null;
   /** Empty-area click right after editing: save only, do not open a new draft row. */
   let suppressGeneralEmptyClickNewTask = false;
   const generalDropIndicator = createTaskDropIndicator(tasksField, tasksFieldRoot);
@@ -1117,12 +1121,19 @@ function toggleAndRepositionTask(tasks, idx) {
    * appended so they survive a reload while offline.
    */
   function mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore) {
+    const serverDbIds = new Set(
+      serverTasks.map((t) => t.dbId).filter(Boolean)
+    );
     const localByDbId = new Map();
     const localOrphans = [];
     for (const t of localBefore) {
       if (!t._dirty) continue;
-      if (t.dbId) localByDbId.set(t.dbId, t);
-      else if (!isTaskEmptyText(t.text)) localOrphans.push(t);
+      if (t.dbId) {
+        if (!serverDbIds.has(t.dbId)) continue;
+        localByDbId.set(t.dbId, t);
+      } else if (!isTaskEmptyText(t.text)) {
+        localOrphans.push(t);
+      }
     }
     if (localByDbId.size === 0 && localOrphans.length === 0) {
       return serverTasks;
@@ -1160,7 +1171,9 @@ function toggleAndRepositionTask(tasks, idx) {
     }
     if (!authUserId) return;
 
+    const loadGen = ++generalLoadGen;
     const requestedWeekIso = getVisibleWeekMondayIso();
+    tasksWorkspaceId = null;
 
     // Paint the cached state first so a flaky network can't hide the user's data.
     // If there's no cache for this week, clear the list so we never accidentally
@@ -1182,6 +1195,7 @@ function toggleAndRepositionTask(tasks, idx) {
     }
 
     if (getVisibleWeekMondayIso() !== requestedWeekIso) return;
+    if (loadGen !== generalLoadGen) return;
 
     const workspaceId = getActiveWorkspaceId();
     let query = supabase
@@ -1203,6 +1217,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     if (getVisibleWeekMondayIso() !== requestedWeekIso) return;
     if (getActiveWorkspaceId() !== workspaceId) return;
+    if (loadGen !== generalLoadGen) return;
 
     const localBefore = state.tasks;
     const serverTasks = (data ?? []).map((row) => ({
@@ -1217,10 +1232,12 @@ function toggleAndRepositionTask(tasks, idx) {
     state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
     normalizeSubtaskFlags(state.tasks);
     state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    tasksWorkspaceId = workspaceId;
     writeTasksCache(
       generalTasksCacheKey(authUserId, requestedWeekIso, workspaceId),
       state.tasks
     );
+    render();
 
     // Network is back: push any local edits that were waiting.
     for (const t of state.tasks) {
@@ -1230,20 +1247,28 @@ function toggleAndRepositionTask(tasks, idx) {
 
   async function handleSession(session) {
     const hasUser = !!session?.user;
-    isAuthed = hasUser;
-    authUserId = session?.user?.id ?? null;
+    const nextUserId = session?.user?.id ?? null;
 
     setTasksInteractivity(hasUser);
 
     if (!hasUser) {
+      if (!isAuthed && !authUserId) return;
+      isAuthed = false;
+      authUserId = null;
+      tasksWorkspaceId = null;
       state.tasks = [];
       renderGuestPrompt();
       return;
     }
 
+    // Supabase fires INITIAL_SESSION right after getSession — skip duplicate load.
+    if (isAuthed && authUserId === nextUserId) return;
+
+    isAuthed = true;
+    authUserId = nextUserId;
+
     await awaitWorkspaceReady(authUserId);
     await loadTasksForUser();
-    render();
   }
 
   async function initAuth() {
@@ -1361,16 +1386,16 @@ function toggleAndRepositionTask(tasks, idx) {
     }
 
     // Keep the on-disk cache in sync with the live view so reloads (and offline
-    // edits) survive without a network round-trip.
+    // edits) survive without a network round-trip. Only write when the visible
+    // tasks belong to the active workspace (avoids polluting another tab's cache).
     if (authUserId) {
-      writeTasksCache(
-        generalTasksCacheKey(
-          authUserId,
-          getVisibleWeekMondayIso(),
-          getActiveWorkspaceId()
-        ),
-        state.tasks
-      );
+      const wsId = getActiveWorkspaceId();
+      if (wsId && tasksWorkspaceId === wsId) {
+        writeTasksCache(
+          generalTasksCacheKey(authUserId, getVisibleWeekMondayIso(), wsId),
+          state.tasks
+        );
+      }
     }
 
     tasksFieldRoot.innerHTML = "";
@@ -1808,7 +1833,6 @@ function toggleAndRepositionTask(tasks, idx) {
     if (!isAuthed) return;
     await flushDirtyGeneralTasks();
     await loadTasksForUser();
-    render();
   });
 
   tasksFieldRoot.addEventListener("paste", (e) => {
@@ -1949,18 +1973,12 @@ function toggleAndRepositionTask(tasks, idx) {
 
   window.addEventListener(WEEK_CHANGE_EVENT, () => {
     if (!isAuthed || !authUserId) return;
-    void (async () => {
-      await loadTasksForUser();
-      render();
-    })();
+    void loadTasksForUser();
   });
 
   window.addEventListener("workspace-change", () => {
     if (!isAuthed || !authUserId) return;
-    void (async () => {
-      await loadTasksForUser();
-      render();
-    })();
+    void loadTasksForUser();
   });
 
   void initAuth();
@@ -2045,6 +2063,8 @@ function toggleAndRepositionTask(tasks, idx) {
     };
     let currentUserId = null;
     let isAuthed = false;
+    let dayLoadGen = 0;
+    let tasksWorkspaceId = null;
     /** Empty-area click while a task field was focused: save only, no new draft. */
     let suppressDayEmptyClickNewPlan = false;
     const dayDropIndicator = createTaskDropIndicator(dayRect, tasksEl);
@@ -2194,12 +2214,19 @@ function toggleAndRepositionTask(tasks, idx) {
     }
 
     function mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore) {
+      const serverDbIds = new Set(
+        serverTasks.map((t) => t.dbId).filter(Boolean)
+      );
       const localByDbId = new Map();
       const localOrphans = [];
       for (const t of localBefore) {
         if (!t._dirty) continue;
-        if (t.dbId) localByDbId.set(t.dbId, t);
-        else if (!isTaskEmptyText(t.text)) localOrphans.push(t);
+        if (t.dbId) {
+          if (!serverDbIds.has(t.dbId)) continue;
+          localByDbId.set(t.dbId, t);
+        } else if (!isTaskEmptyText(t.text)) {
+          localOrphans.push(t);
+        }
       }
       if (localByDbId.size === 0 && localOrphans.length === 0) {
         return serverTasks;
@@ -2233,9 +2260,11 @@ function toggleAndRepositionTask(tasks, idx) {
     async function loadTasksForDay() {
       if (!supabase || !isAuthed || !currentUserId) return;
 
+      const loadGen = ++dayLoadGen;
       const cachedDayName = dayMeta.dayName;
       const cachedDate = dayMeta.date;
       const cachedWorkspaceId = getActiveWorkspaceId();
+      tasksWorkspaceId = null;
 
       // Paint the cache before the network call. If there's nothing cached for
       // this day, clear the list so we never show stale data from another day.
@@ -2265,6 +2294,7 @@ function toggleAndRepositionTask(tasks, idx) {
       // the fresh state.
       if (dayMeta.dayName !== cachedDayName || dayMeta.date !== cachedDate) return;
       if (getActiveWorkspaceId() !== cachedWorkspaceId) return;
+      if (loadGen !== dayLoadGen) return;
 
       const localBefore = state.tasks;
       const serverTasks = (data ?? []).map((row) => ({
@@ -2279,10 +2309,13 @@ function toggleAndRepositionTask(tasks, idx) {
       state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
       state.tasks = partitionUncheckedBeforeChecked(state.tasks);
       normalizeSubtaskFlags(state.tasks);
+      stabilizeTimeSorted();
+      tasksWorkspaceId = cachedWorkspaceId;
       writeTasksCache(
         dailyTasksCacheKey(currentUserId, cachedDayName, cachedDate, cachedWorkspaceId),
         state.tasks
       );
+      render();
 
       // Network is back — retry any waiting offline edits.
       for (const t of state.tasks) {
@@ -2398,15 +2431,18 @@ function toggleAndRepositionTask(tasks, idx) {
 
       // Keep the cache aligned with the live view (offline edits survive reload).
       if (isAuthed && currentUserId) {
-        writeTasksCache(
-          dailyTasksCacheKey(
-            currentUserId,
-            dayMeta.dayName,
-            dayMeta.date,
-            getActiveWorkspaceId()
-          ),
-          state.tasks
-        );
+        const wsId = getActiveWorkspaceId();
+        if (wsId && tasksWorkspaceId === wsId) {
+          writeTasksCache(
+            dailyTasksCacheKey(
+              currentUserId,
+              dayMeta.dayName,
+              dayMeta.date,
+              wsId
+            ),
+            state.tasks
+          );
+        }
       }
 
       const list = document.createElement("div");
@@ -2822,7 +2858,6 @@ function toggleAndRepositionTask(tasks, idx) {
       if (!isAuthed) return;
       await flushDirtyDayTasks();
       await loadTasksForDay();
-      render();
     });
 
     tasksEl.addEventListener("dragover", (e) => {
@@ -2929,19 +2964,25 @@ function toggleAndRepositionTask(tasks, idx) {
     );
 
     async function setAuthUser(userId) {
-      isAuthed = !!userId;
-      currentUserId = userId || null;
+      const nextUserId = userId || null;
 
-      if (!isAuthed) {
+      if (!nextUserId) {
+        if (!isAuthed && !currentUserId) return;
+        isAuthed = false;
+        currentUserId = null;
+        tasksWorkspaceId = null;
         state.tasks = [];
         tasksEl.innerHTML = "";
         return;
       }
 
+      if (isAuthed && currentUserId === nextUserId) return;
+
+      isAuthed = true;
+      currentUserId = nextUserId;
+
       await awaitWorkspaceReady(userId);
       await loadTasksForDay();
-      stabilizeTimeSorted();
-      render();
     }
 
     window.addEventListener("task-cross-move", (e) => {
@@ -2959,15 +3000,11 @@ function toggleAndRepositionTask(tasks, idx) {
       dayMeta = getDayMeta(dayName);
       if (!isAuthed) return;
       await loadTasksForDay();
-      stabilizeTimeSorted();
-      render();
     });
 
     window.addEventListener("workspace-change", async () => {
       if (!isAuthed) return;
       await loadTasksForDay();
-      stabilizeTimeSorted();
-      render();
     });
 
     return { setAuthUser };
