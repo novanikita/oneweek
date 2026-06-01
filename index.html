@@ -43,7 +43,7 @@
         </div>
         <div class="layout-header-right">
           <button type="button" class="header-text-btn" id="week-go-this-week" hidden>
-            go to this week
+            Now
           </button>
           <div
             class="workspace-tabs"
@@ -124,7 +124,17 @@
 
       <section class="panel tasks-panel" aria-label="Tasks">
         <div class="rectangle tasks-field" id="tasks-field" aria-label="Tasks area">
-          <div class="day-label tasks-field-label">tasks</div>
+          <div class="tasks-field-header">
+            <div class="day-label tasks-field-label">tasks</div>
+            <button
+              type="button"
+              class="tasks-field-action"
+              id="tasks-move-remaining"
+              hidden
+            >
+              move remaining tasks
+            </button>
+          </div>
           <div id="tasks-field-root" class="tasks-field-root"></div>
         </div>
       </section>
@@ -140,6 +150,70 @@
       <span class="connection-banner-text">пока нет связи, но задачи всё равно сохраняются</span>
     </div>
 
+    <div
+      class="guest-auth-backdrop"
+      id="guest-auth-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="guest-auth-title"
+      hidden
+    >
+      <div class="guest-auth-modal">
+        <h2 id="guest-auth-title" class="guest-auth-title">
+          Sign in or sign up
+        </h2>
+        <p class="guest-auth-text">
+          Required to safely store your tasks and sync them across your
+          devices.
+        </p>
+        <form
+          class="guest-auth-form"
+          id="guest-auth-form"
+          name="guest-auth"
+          method="post"
+          action="#"
+          autocomplete="on"
+        >
+          <input
+            id="guest-auth-email"
+            class="guest-auth-input"
+            type="email"
+            name="email"
+            placeholder="Email"
+            autocomplete="username"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            inputmode="email"
+            required
+          />
+          <input
+            id="guest-auth-password"
+            class="guest-auth-input"
+            type="password"
+            name="password"
+            placeholder="Password"
+            autocomplete="current-password"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            minlength="6"
+            required
+          />
+          <button type="submit" class="guest-auth-submit" id="guest-auth-submit">
+            Sign in / Sign up
+          </button>
+        </form>
+        <div id="guest-auth-message-slot" class="guest-auth-message-slot">
+          <p
+            id="guest-auth-message"
+            class="guest-auth-message"
+            aria-live="polite"
+          ></p>
+        </div>
+      </div>
+    </div>
+
     <div class="sidebar-overlay" id="auth-overlay" hidden></div>
     <nav class="sidebar" id="sidebar" aria-label="Menu" hidden>
       <div class="sidebar-content">
@@ -151,6 +225,24 @@
         </div>
         <div class="sidebar-scroll">
         <p id="auth-message" class="auth-message" aria-live="polite"></p>
+
+        <div
+          class="sidebar-section sidebar-section-workspaces"
+          id="sidebar-section-workspaces"
+          hidden
+        >
+          <p class="sidebar-section-title">Workspace</p>
+          <div class="sidebar-select-wrap">
+            <select id="sidebar-workspace-select" class="sidebar-select"></select>
+          </div>
+          <div
+            class="sidebar-actions"
+            id="sidebar-workspace-delete-actions"
+            hidden
+          >
+            <button type="button" id="sidebar-workspace-delete">Delete</button>
+          </div>
+        </div>
 
         <div class="sidebar-section">
           <p class="sidebar-section-title">Themes</p>

@@ -637,6 +637,13 @@ h1 {
   padding-top: 0;
 }
 
+/* Workspace section sits right above Themes and shares the same visual group,
+   so the divider between them is redundant. */
+.sidebar-section-workspaces + .sidebar-section {
+  border-top: 0;
+  padding-top: 0;
+}
+
 .sidebar-section-weeks {
   --weeks-item-bleed: 0.5em;
   flex: 1 1 auto;
@@ -902,11 +909,208 @@ h1 {
   position: relative;
 }
 
+.tasks-field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6em;
+  margin-bottom: 0.1em;
+}
+
+.tasks-field-header .tasks-field-label {
+  margin: 0;
+}
+
+.tasks-field-action {
+  font-family: inherit;
+  font-size: 0.65em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: inherit;
+  background: transparent;
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.4em;
+  padding: 0.35em 0.7em;
+  cursor: pointer;
+  line-height: 1.2;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.tasks-field-action:hover {
+  opacity: 1;
+  background-color: var(--color-border);
+}
+
+.tasks-field-action:disabled {
+  cursor: default;
+  opacity: 0.35;
+  background: transparent;
+}
+
 .tasks-field--guest .tasks-field-root {
   cursor: default;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* Guest auth modal — full-screen blur backdrop with a centred login panel.
+   Shown only when there is no Supabase session; covers the whole app and
+   prevents interaction with the (placeholder) data behind it. */
+.guest-auth-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5em;
+  background: color-mix(in srgb, var(--color-background) 30%, transparent);
+  backdrop-filter: blur(4px) saturate(115%);
+  -webkit-backdrop-filter: blur(4px) saturate(115%);
+  animation: guest-auth-fade-in 220ms ease-out;
+}
+
+.guest-auth-backdrop[hidden] {
+  display: none;
+}
+
+@keyframes guest-auth-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.guest-auth-modal {
+  width: min(22em, 100%);
+  max-width: 100%;
+  background: var(--color-background);
+  color: var(--color-text);
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.8em;
+  padding: 1.6em 1.4em 1.4em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85em;
+  box-shadow: 0 1em 2.5em rgba(0, 0, 0, 0.18);
+  animation: guest-auth-pop-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes guest-auth-pop-in {
+  from { transform: translateY(8px) scale(0.985); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.guest-auth-title {
+  margin: 0;
+  font-size: 1.15em;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.guest-auth-text {
+  margin: 0;
+  font-size: 0.95em;
+  line-height: 1.45;
+  opacity: 0.8;
+  text-align: center;
+}
+
+.guest-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55em;
+  margin-top: 0.2em;
+}
+
+.guest-auth-input {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.45em;
+  padding: 0.6em 0.75em;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.guest-auth-input:focus {
+  border-color: var(--color-text);
+}
+
+.guest-auth-submit {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.45em;
+  padding: 0.65em 0.9em;
+  cursor: pointer;
+  line-height: 1.2;
+  margin-top: 0.25em;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.guest-auth-submit:hover:not(:disabled) {
+  background-color: var(--color-border);
+}
+
+.guest-auth-submit:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* The slot collapses to zero height when there's no message, so the popup
+   has no dead space under the submit button. When a message appears, the
+   slot expands smoothly via `grid-template-rows: 0fr → 1fr`, and the text
+   itself fades in. The negative top margin cancels the modal's flex `gap`
+   while the slot is collapsed (otherwise the gap stays visible). */
+.guest-auth-message-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: -0.85em;
+  transition: grid-template-rows 220ms ease, margin-top 220ms ease;
+}
+
+.guest-auth-message-slot.is-shown {
+  grid-template-rows: 1fr;
+  margin-top: 0;
+}
+
+.guest-auth-message {
+  margin: 0;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 0.9em;
+  line-height: 1.4;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.guest-auth-message-slot.is-shown .guest-auth-message {
+  opacity: 0.85;
+}
+
+.guest-auth-message-slot.is-shown .guest-auth-message.is-error {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guest-auth-message-slot,
+  .guest-auth-message {
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guest-auth-backdrop,
+  .guest-auth-modal {
+    animation: none;
+  }
 }
 
 .tasks-guest-prompt {
@@ -968,20 +1172,59 @@ h1 {
   }
 }
 
+/* Subtle fade when the user navigates between weeks (arrows, the "Now"
+   button, or the sidebar list). Animation is restarted from JS by toggling
+   the `.is-week-switching` class on `.layout`. */
+@keyframes oneweek-week-switch {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.layout.is-week-switching .week-grid,
+.layout.is-week-switching .tasks-field {
+  animation: oneweek-week-switch 260ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layout.is-week-switching .week-grid,
+  .layout.is-week-switching .tasks-field {
+    animation: none;
+  }
+}
+
 @media (max-width: 900px) {
+  /* Mobile: the whole page scrolls; inner panels are not clipped. */
+  html,
   body {
-    font-size: clamp(12px, 3.15vw, 14px);
+    height: auto;
+    min-height: 100%;
+  }
+
+  body {
+    font-size: clamp(14px, 3.75vw, 17px);
+    overflow: visible;
+    /* Defined on body so .layout can use it for padding-top reservation
+       (the header itself is position:fixed and outside .layout's box). */
+    --header-bar-height: 3em;
   }
 
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto clamp(32rem, 72dvh, 50rem) minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto auto;
     min-height: 100dvh;
+    height: auto;
+    overflow: visible;
     row-gap: 0;
   }
 
   .layout-header {
-    padding: 0.75em;
+    /* Vertical padding is part of --header-bar-height; horizontal padding is
+       a separate inset that does not affect the row height. */
+    padding: 0 0.75em;
   }
 
   .layout-header-right .panel-title {
@@ -995,7 +1238,7 @@ h1 {
 
   .week-nav {
     --week-nav-gap: 0.4em;
-    --week-nav-label-width: 7.5em;
+    --week-nav-label-width: 9em;
     grid-template-columns: 1.15em var(--week-nav-gap) var(--week-nav-label-width) var(--week-nav-gap) 1.15em;
     width: calc(1.15em + var(--week-nav-gap) + var(--week-nav-label-width) + var(--week-nav-gap) + 1.15em);
   }
@@ -1003,6 +1246,54 @@ h1 {
   .week-nav-btn .icon-themed {
     width: 1.15em;
     height: 1.15em;
+  }
+
+  .week-nav-label {
+    font-size: 1.2em;
+  }
+
+  .panel-titlebar.layout-header {
+    /* Header is fixed at exactly --header-bar-height; horizontal padding is
+       set separately on .layout-header so it cannot inflate this height. */
+    --header-bar-height: 3em;
+    height: var(--header-bar-height);
+    min-height: var(--header-bar-height);
+    max-height: var(--header-bar-height);
+  }
+
+  /* Lock every header column to the same height AND center its content
+     vertically. Without this, the menu button (inline-block) and the
+     week-nav wrapper (block) push their contents to the top of the row,
+     and the "Now" button can pop the header taller than the other two. */
+  .layout-header-menu,
+  .layout-header-week,
+  .layout-header-right {
+    height: var(--header-bar-height);
+    min-height: var(--header-bar-height);
+    max-height: var(--header-bar-height);
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+  }
+
+  .layout-header-menu {
+    justify-content: flex-start;
+  }
+
+  .layout-header-week {
+    justify-content: center;
+  }
+
+  .layout-header-right {
+    justify-content: flex-end;
+  }
+
+  .header-text-btn {
+    font-size: 1.15em;
+    padding: 0.3em 0.7em;
+    /* Let the button size itself by content so it never pushes the header
+       row taller than --header-bar-height. */
+    height: auto;
   }
 
   .layout-footer {
@@ -1032,7 +1323,6 @@ h1 {
 
   .panel.tasks-panel {
     padding: 0 0.75em 0.75em;
-    flex: 1;
     min-height: 0;
     gap: 0;
   }
@@ -1046,37 +1336,66 @@ h1 {
   }
 
   .layout-header {
-    position: sticky;
+    /* Pin the header to the viewport so the grid below always starts at
+       exactly the same Y. The layout grid reserves space for it via
+       padding-top below. */
+    position: fixed;
     top: 0;
+    left: 0;
+    right: 0;
     z-index: 5;
+    background: var(--color-background);
+  }
+
+  .layout {
+    padding-top: var(--header-bar-height);
   }
 
   .week-panel {
-    height: 100%;
+    height: auto;
     min-height: 0;
   }
 
-  /* 2 cols × 4 rows: Mon–Tue, Wed–Thu, Fri–Sat, Sun–Next (DOM order unchanged). */
+  /* 2 cols × 4 rows: Mon–Tue, Wed–Thu, Fri–Sat, Sun–Next (DOM order unchanged).
+     Rows are `auto` so a long day grows the whole row, and grid's default
+     stretch keeps both cells in a row at the same height. */
   .week-grid {
     grid-template-columns: repeat(2, 1fr);
-    grid-template-rows: repeat(4, minmax(0, 1fr));
+    grid-template-rows: repeat(4, auto);
     border-top-left-radius: var(--radius-shell);
     border-top-right-radius: var(--radius-shell);
-    overflow: auto;
+    overflow: visible;
   }
 
   .week-grid > .rectangle {
-    min-height: 7rem;
+    min-height: 10rem;
+  }
+
+  .day-tasks {
+    overflow: visible;
+  }
+
+  .tasks-field-root {
+    overflow: visible;
+  }
+
+  .task-row .task-text {
+    line-height: var(--task-line);
   }
 
   .task-row:not(.task-row-multiline) .task-text {
     max-height: var(--task-line);
   }
 
+  .task-row + .task-row {
+    margin-top: 0.5em;
+  }
+
 
   .tasks-field {
     min-height: 0;
-    height: 100%;
+    height: auto;
+    overflow: visible;
     /* Seam line is week-grid bottom border; no second line on tasks. */
     border-top-width: 0;
     border-bottom-left-radius: var(--radius-shell);
@@ -1096,6 +1415,24 @@ h1 {
   /* Bottom buffer so the actions popover (which sits below the active row)
      never gets clipped by the scroll container, even for the last task. */
   padding-bottom: 3em;
+}
+
+/* When completed MAIN rows are pinned at the bottom, their popover opens
+   UPWARD (see `.task-row.completed .task-row-actions`), so the 3em bottom
+   buffer is just visible whitespace. Drop it in that case. A completed
+   subtask alone doesn't pin to the bottom, so the original buffer is kept. */
+.tasks-list:has(> .task-row.completed:not(.task-row-sub)) {
+  padding-bottom: 0.3em;
+}
+
+/* Pin the completed MAIN-tasks stack to the bottom of the tasks field so
+   completed rows "fall" down and grow upward as more are added, with empty
+   space between them and the unchecked rows above.
+   The anchor class is set by the panel render code on the first completed
+   main row, regardless of how many completed subtasks sit ahead of it (which
+   a pure-CSS sibling selector can't express). */
+.tasks-list > .task-row.task-row-completed-anchor {
+  margin-top: auto;
 }
 
 .task-row {
@@ -1170,6 +1507,13 @@ h1 {
   pointer-events: none;
   z-index: 6;
   white-space: nowrap;
+}
+
+/* Completed rows are pinned to the bottom of the field; their popover would
+   otherwise overflow the scroll container, so flip it above the row. */
+.task-row.completed .task-row-actions {
+  top: auto;
+  bottom: calc(100% + 0.3em);
 }
 
 .task-row:has(.task-text:focus) .task-row-actions,
@@ -1626,6 +1970,90 @@ h1 {
     width: 100vw;
     max-width: none;
     border-right: 0;
+    /* Bumps the type scale inside the sidebar without touching the rest of
+       the page. Almost everything inside is sized in em, so this scales
+       titles, labels, inputs, selects, buttons, and the about link together. */
+    font-size: 1.15em;
+  }
+
+  /* On mobile the account block keeps the "Signed in as ..." text and the
+     Logout button on one row, with the email/password panel and about link
+     wrapping to their own rows below. */
+  .sidebar-account.sidebar-section {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 0.25em;
+    column-gap: 0.6em;
+    padding-top: 0.25em;
+    margin-top: 0;
+  }
+
+  .sidebar-account > .auth-status {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .sidebar-account > #auth-account-signed-in {
+    flex: 0 0 auto;
+  }
+
+  .sidebar-account > #auth-account-guest,
+  .sidebar-account > .sidebar-about {
+    flex: 1 1 100%;
+  }
+
+  .sidebar-account .sidebar-about {
+    margin-top: 0;
+  }
+
+  #auth-account-signed-in .sidebar-actions {
+    flex-direction: row;
+  }
+
+  #auth-account-signed-in .sidebar-actions button {
+    width: auto;
+  }
+
+  #logout-button {
+    padding: 0.5em 1em;
+  }
+
+  /* Workspace switcher lives in the sidebar on mobile, not the header. */
+  .workspace-tabs {
+    display: none !important;
+  }
+}
+
+@media (min-width: 901px) {
+  /* On desktop the sidebar workspace section is unused; tabs remain in header. */
+  .sidebar-section-workspaces {
+    display: none !important;
+  }
+}
+
+@media (max-width: 900px) {
+
+  .task-row {
+    --task-line: 1.5em;
+    --task-pad-y: 0;
+    padding-left: 0;
+    gap: 0.3em;
+  }
+
+  .task-row.task-row-multiline .task-checkbox {
+    margin-top: 0;
+  }
+
+  .task-row.task-row-sub {
+    padding-left: 1.5em;
+  }
+
+  .task-checkbox {
+    width: 1.8em;
+    height: 1.8em;
+    border-width: 0.1em;
+    border-radius: 0.25em;
   }
 
   .task-row-actions {
@@ -1672,5 +2100,13 @@ h1 {
   .task-row-actions .task-drag-handle-icon {
     width: 0.75em;
     height: 1.1em;
+  }
+
+  /* The 3em buffer existed to keep the actions popover from being clipped by
+     the scroll container; on mobile there is no scroll container (the popover
+     is position:fixed), so the buffer is just visible whitespace below the
+     last task. */
+  .tasks-list {
+    padding-bottom: 0.5em;
   }
 }

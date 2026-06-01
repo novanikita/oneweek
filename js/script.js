@@ -38,8 +38,123 @@ function isTaskEmptyText(text) {
   return (text ?? "").trim() === "";
 }
 
+function prefersReducedMotion() {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/**
+ * FLIP (First, Last, Invert, Play): capture `.task-row` rects before a
+ * re-render and animate the visual displacement after. Used by both the
+ * general and daily renders so checking a task, dragging it within a list,
+ * or sliding it on/off the completed pile glides instead of snapping.
+ */
+function captureTaskRowRects(rootEl) {
+  if (!rootEl) return null;
+  const map = new Map();
+  const rows = rootEl.querySelectorAll(".task-row[data-id]");
+  for (const row of rows) {
+    const id = row.dataset.id;
+    if (!id) continue;
+    map.set(id, row.getBoundingClientRect());
+  }
+  return map;
+}
+
+function playTaskRowFlip(rootEl, beforeMap) {
+  if (!rootEl || !beforeMap || beforeMap.size === 0) return;
+  if (prefersReducedMotion()) return;
+  const rows = rootEl.querySelectorAll(".task-row[data-id]");
+  const animated = [];
+  for (const row of rows) {
+    const id = row.dataset.id;
+    const before = beforeMap.get(id);
+    if (!before) continue;
+    const after = row.getBoundingClientRect();
+    const dx = before.left - after.left;
+    const dy = before.top - after.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+    row.style.transition = "none";
+    row.style.transform = `translate(${dx}px, ${dy}px)`;
+    row.style.willChange = "transform";
+    animated.push(row);
+  }
+  if (animated.length === 0) return;
+  requestAnimationFrame(() => {
+    for (const row of animated) {
+      row.style.transition = "transform 280ms cubic-bezier(0.22, 1, 0.36, 1)";
+      row.style.transform = "";
+    }
+    window.setTimeout(() => {
+      for (const row of animated) {
+        row.style.transition = "";
+        row.style.transform = "";
+        row.style.willChange = "";
+      }
+    }, 320);
+  });
+}
+
 if (typeof window !== "undefined") {
   window.__weekOffset = Number(window.__weekOffset || 0);
+}
+
+/**
+ * Undo stack (Ctrl/Cmd+Z). Each panel (general, daily-per-day) registers a
+ * restore handler keyed by its block id; deletion handlers push an entry onto
+ * the shared stack, and the global keydown listener pops + dispatches to the
+ * right block. Only the action of "task deleted via trash button" is currently
+ * undoable — text edits are handled by the browser's native textarea undo.
+ */
+const oneweekUndoStack = [];
+const oneweekUndoHandlers = new Map();
+const ONEWEEK_UNDO_LIMIT = 50;
+
+function oneweekRegisterUndoHandler(blockId, fn) {
+  if (!blockId || typeof fn !== "function") return;
+  oneweekUndoHandlers.set(blockId, fn);
+}
+
+function oneweekPushUndo(entry) {
+  if (!entry || !entry.blockId) return;
+  oneweekUndoStack.push(entry);
+  if (oneweekUndoStack.length > ONEWEEK_UNDO_LIMIT) oneweekUndoStack.shift();
+}
+
+async function oneweekPerformUndo() {
+  while (oneweekUndoStack.length > 0) {
+    const entry = oneweekUndoStack.pop();
+    const handler = oneweekUndoHandlers.get(entry.blockId);
+    if (!handler) continue;
+    try {
+      const handled = await handler(entry);
+      if (handled !== false) return;
+      // handler returned false → this entry is no longer applicable
+      // (e.g. user switched to another week); try the next one.
+    } catch (err) {
+      console.error("Undo handler failed:", err);
+      return;
+    }
+  }
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("keydown", (e) => {
+    // Cmd+Z (mac) / Ctrl+Z (everywhere else). Skip Cmd+Shift+Z to leave room
+    // for a future redo.
+    if (!(e.metaKey || e.ctrlKey)) return;
+    if (e.shiftKey) return;
+    if (e.key !== "z" && e.key !== "Z") return;
+    // Don't fight the browser's native undo inside text fields.
+    const t = e.target;
+    if (t) {
+      const tag = t.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT" || t.isContentEditable) return;
+    }
+    if (oneweekUndoStack.length === 0) return;
+    e.preventDefault();
+    void oneweekPerformUndo();
+  });
 }
 
 const WEEK_CHANGE_EVENT = "week-offset-change";
@@ -203,24 +318,50 @@ function markTaskDirty(task) {
   if (task) task._dirty = true;
 }
 
-function syncTaskRowMultiline(input) {
-  const row = input?.closest?.(".task-row");
-  if (!row || !input) return;
+function getTaskInputOneLineHeight(input) {
   const style = getComputedStyle(input);
   const lineHeight = parseFloat(style.lineHeight) || 18;
   const paddingTop = parseFloat(style.paddingTop) || 0;
   const paddingBottom = parseFloat(style.paddingBottom) || 0;
-  const oneLineHeight = lineHeight + paddingTop + paddingBottom;
+  return lineHeight + paddingTop + paddingBottom;
+}
+
+function syncTaskRowMultiline(input) {
+  const row = input?.closest?.(".task-row");
+  if (!row || !input) return;
+  const oneLineHeight = getTaskInputOneLineHeight(input);
   const multiline = input.scrollHeight > oneLineHeight + 1;
   row.classList.toggle("task-row-multiline", multiline);
 }
 
 function autoSizeTextarea(el) {
   if (!el) return;
+  const row = el.closest(".task-row");
+  const wasMultiline = row?.classList.contains("task-row-multiline");
+
   el.style.height = "0";
-  const safeHeight = Math.max(el.scrollHeight, 18);
-  el.style.height = `${safeHeight}px`;
   syncTaskRowMultiline(el);
+
+  // For single-line rows we always pin the height to the exact computed
+  // line-height + paddings. Using scrollHeight here causes ±1px jitter
+  // between empty and filled rows because browsers round scrollHeight to a
+  // whole pixel while the CSS line-height is fractional (e.g. 19.2 vs 20).
+  const oneLineHeight = getTaskInputOneLineHeight(el);
+  const isMultiline = row?.classList.contains("task-row-multiline");
+  let safeHeight = isMultiline
+    ? Math.max(el.scrollHeight, oneLineHeight)
+    : oneLineHeight;
+  el.style.height = `${safeHeight}px`;
+
+  // Re-measure once if the multiline flag toggled — applying the new height
+  // can change scrollHeight (e.g. wider single-line content reflows narrower).
+  if (wasMultiline !== isMultiline) {
+    el.style.height = "0";
+    safeHeight = isMultiline
+      ? Math.max(el.scrollHeight, oneLineHeight)
+      : oneLineHeight;
+    el.style.height = `${safeHeight}px`;
+  }
 }
 
 const taskSaveFlushes = [];
@@ -942,11 +1083,47 @@ function firstCheckedTaskIndex(tasks) {
   return tasks.findIndex((t) => t.checked);
 }
 
-/** Unchecked first, then completed — stable order inside each group. */
+/**
+ * Split a flat task array into groups of `{ main, subs }`, where `subs` is the
+ * uninterrupted run of `subtask` rows that follow each non-subtask row. An
+ * orphan subtask (no main above it) becomes its own group with empty subs.
+ */
+function splitIntoTaskGroups(tasks) {
+  const groups = [];
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    if (t.subtask && groups.length > 0 && !groups[groups.length - 1].main.subtask) {
+      groups[groups.length - 1].subs.push(t);
+    } else {
+      groups.push({ main: t, subs: [] });
+    }
+  }
+  return groups;
+}
+
+/**
+ * Unchecked-first ordering that respects subtask groups:
+ *   - Inside each group: main stays on top; subtasks split unchecked-before-checked.
+ *   - Between groups: groups whose `main` is checked sink to the bottom in their
+ *     original relative order.
+ * This keeps a freshly-checked subtask glued to the bottom of its parent's
+ * subtask pile instead of escaping to the global completed stack at the end of
+ * the field.
+ */
 function partitionUncheckedBeforeChecked(tasks) {
-  const unchecked = tasks.filter((t) => !t.checked);
-  const checked = tasks.filter((t) => t.checked);
-  return [...unchecked, ...checked];
+  const groups = splitIntoTaskGroups(tasks);
+  for (const g of groups) {
+    const u = g.subs.filter((s) => !s.checked);
+    const c = g.subs.filter((s) => s.checked);
+    g.subs = [...u, ...c];
+  }
+  const uncheckedGroups = groups.filter((g) => !g.main.checked);
+  const checkedGroups = groups.filter((g) => g.main.checked);
+  const result = [];
+  for (const g of [...uncheckedGroups, ...checkedGroups]) {
+    result.push(g.main, ...g.subs);
+  }
+  return result;
 }
 
 /**
@@ -964,18 +1141,19 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
   return insertAt;
 }
 
-/** Toggle task completion and keep unchecked tasks above completed tasks. */
+/**
+ * Toggle task completion and reposition the row according to subtask grouping:
+ *   - Main tasks fall to / float back from the global completed pile at the
+ *     bottom (newly checked land at the TOP of that pile so it grows upward).
+ *   - Subtasks stay inside their parent's subtask run: checking sinks them to
+ *     the bottom of that run, unchecking pops them to the top.
+ */
 function toggleAndRepositionTask(tasks, idx) {
   const task = tasks[idx];
   task.checked = !task.checked;
-  tasks.splice(idx, 1);
-  if (task.checked) {
-    tasks.push(task);
-  } else {
-    const fc = firstCheckedTaskIndex(tasks);
-    const insertIndex = fc === -1 ? tasks.length : fc;
-    tasks.splice(insertIndex, 0, task);
-  }
+  const reordered = partitionUncheckedBeforeChecked(tasks);
+  tasks.length = 0;
+  for (const t of reordered) tasks.push(t);
   return task;
 }
 
@@ -1401,6 +1579,7 @@ function toggleAndRepositionTask(tasks, idx) {
       tasksWorkspaceId = null;
       state.tasks = [];
       renderGuestPrompt();
+      updateMoveRemainingBtn();
       return;
     }
 
@@ -1412,6 +1591,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     await awaitWorkspaceReady(authUserId);
     await loadTasksForUser();
+    updateMoveRemainingBtn();
   }
 
   async function initAuth() {
@@ -1432,12 +1612,61 @@ function toggleAndRepositionTask(tasks, idx) {
     const idx = getTaskIndex(taskId);
     if (idx === -1) return;
     const task = state.tasks[idx];
+
+    // Remember enough to fully recreate the row on Ctrl/Cmd+Z, tied to the
+    // exact week + workspace it lived in.
+    oneweekPushUndo({
+      blockId: GENERAL_BLOCK_ID,
+      type: "delete",
+      weekIso: getVisibleWeekMondayIso(),
+      workspaceId: getActiveWorkspaceId(),
+      userId: authUserId,
+      position: idx,
+      snapshot: {
+        text: task.text,
+        checked: !!task.checked,
+        subtask: !!task.subtask,
+        color: normalizeTaskColor(task.color),
+      },
+    });
+
     if (task.dbId) void deleteTaskFromDb(task);
     state.focusAfterRender = null;
     state.tasks.splice(idx, 1);
     schedulePersistTaskPositions();
     render();
   }
+
+  oneweekRegisterUndoHandler(GENERAL_BLOCK_ID, async (entry) => {
+    if (entry.type !== "delete") return false;
+    // Only restore if the user is still signed in as the same user and looking
+    // at the same week/workspace where the delete happened. Otherwise leave
+    // the entry alone (the loop will try the next one or no-op).
+    if (!authUserId || entry.userId !== authUserId) return false;
+    if (entry.weekIso !== getVisibleWeekMondayIso()) return false;
+    if ((entry.workspaceId || null) !== (getActiveWorkspaceId() || null)) {
+      return false;
+    }
+    const s = entry.snapshot || {};
+    const restored = createTask(
+      s.text ?? "",
+      !!s.checked,
+      null,
+      !!s.subtask,
+      normalizeTaskColor(s.color)
+    );
+    const at = Math.max(0, Math.min(entry.position ?? state.tasks.length, state.tasks.length));
+    state.tasks.splice(at, 0, restored);
+    normalizeSubtaskFlags(state.tasks);
+    state.focusAfterRender = { id: restored.id };
+    if (!isTaskEmptyText(restored.text)) {
+      markTaskDirty(restored);
+      void persistTask(restored);
+    }
+    schedulePersistTaskPositions();
+    render();
+    return true;
+  });
 
   async function syncTaskFromInput(taskId) {
     const idx = getTaskIndex(taskId);
@@ -1491,37 +1720,10 @@ function toggleAndRepositionTask(tasks, idx) {
   }
 
   function renderGuestPrompt() {
+    // The dedicated guest auth modal (see #guest-auth-backdrop) covers the
+    // whole app with a blurred overlay, so the tasks field stays empty for
+    // signed-out visitors instead of duplicating the call-to-action here.
     tasksFieldRoot.innerHTML = "";
-
-    const wrap = document.createElement("div");
-    wrap.className = "tasks-guest-prompt";
-
-    const message = document.createElement("p");
-    message.className = "tasks-guest-message";
-    message.textContent = "Чтобы начать надо зарегистрироваться";
-
-    const actions = document.createElement("div");
-    actions.className = "tasks-guest-actions";
-
-    const signInBtn = document.createElement("button");
-    signInBtn.type = "button";
-    signInBtn.className = "tasks-guest-btn";
-    signInBtn.textContent = "Sign in";
-
-    const logInBtn = document.createElement("button");
-    logInBtn.type = "button";
-    logInBtn.className = "tasks-guest-btn";
-    logInBtn.textContent = "Log in";
-
-    const openAuth = () => window.oneweekOpenAuth?.();
-    signInBtn.addEventListener("click", openAuth);
-    logInBtn.addEventListener("click", openAuth);
-
-    actions.appendChild(signInBtn);
-    actions.appendChild(logInBtn);
-    wrap.appendChild(message);
-    wrap.appendChild(actions);
-    tasksFieldRoot.appendChild(wrap);
   }
 
   function render() {
@@ -1543,17 +1745,27 @@ function toggleAndRepositionTask(tasks, idx) {
       }
     }
 
+    const beforeRects = captureTaskRowRects(tasksFieldRoot);
     tasksFieldRoot.innerHTML = "";
 
     const list = document.createElement("div");
     list.className = "tasks-list";
 
-    for (const task of state.tasks) {
+    // Index of the first completed main row (subtasks excluded). That row gets
+    // `margin-top: auto` so the completed pile is pinned to the bottom; a
+    // pure-CSS sibling selector can't express "first completed main with any
+    // mix of subtasks ahead of it", so we mark it from JS.
+    const firstCompletedMainIdx = state.tasks.findIndex(
+      (t) => t.checked && !t.subtask
+    );
+
+    for (let i = 0; i < state.tasks.length; i++) {
+      const task = state.tasks[i];
       const taskId = task.id;
       const row = document.createElement("div");
       row.className = `task-row${task.checked ? " completed" : ""}${
         task.subtask ? " task-row-sub" : ""
-      }`;
+      }${i === firstCompletedMainIdx ? " task-row-completed-anchor" : ""}`;
       row.dataset.id = taskId;
 
       const checkbox = document.createElement("button");
@@ -1760,6 +1972,8 @@ function toggleAndRepositionTask(tasks, idx) {
     tasksFieldRoot.querySelectorAll(".task-text").forEach((el) => {
       autoSizeTextarea(el);
     });
+
+    playTaskRowFlip(tasksFieldRoot, beforeRects);
 
     if (state.focusAfterRender) {
       const { id, start, end } = state.focusAfterRender;
@@ -2051,14 +2265,31 @@ function toggleAndRepositionTask(tasks, idx) {
 
       hideAllTaskDropIndicators();
 
-      await flushAllTaskSaves();
-
       const text = String(payload.text ?? "");
       const checked = !!payload.checked;
       const sub = !!payload.subtask;
       const color = normalizeTaskColor(payload.color);
-
       const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
+
+      // Update both panels synchronously before any await — otherwise the
+      // source row snaps back while flush/relocate runs.
+      window.dispatchEvent(
+        new CustomEvent("task-cross-move", {
+          detail: {
+            sourceBlock: payload.sourceBlock,
+            sourceLocalId: payload.localId,
+            targetBlock: GENERAL_BLOCK_ID,
+          },
+        })
+      );
+
+      const moved = createTask(text, checked, payload.dbId || null, sub, color);
+      state.tasks.splice(safeInsertAt, 0, moved);
+      schedulePersistTaskPositions();
+      state.focusAfterRender = { id: moved.id };
+      render();
+
+      await flushAllTaskSaves();
 
       if (payload.dbId) {
         const { ok, error } = await supabaseRelocateTaskRow(supabase, authUserId, payload.dbId, {
@@ -2078,26 +2309,10 @@ function toggleAndRepositionTask(tasks, idx) {
         }
       }
 
-      const moved = createTask(text, checked, payload.dbId || null, sub, color);
-      state.tasks.splice(safeInsertAt, 0, moved);
-      schedulePersistTaskPositions();
-      state.focusAfterRender = { id: moved.id };
-      render();
-
       if (!payload.dbId && !isTaskEmptyText(text)) {
         markTaskDirty(moved);
         await persistTask(moved);
       }
-
-      window.dispatchEvent(
-        new CustomEvent("task-cross-move", {
-          detail: {
-            sourceBlock: payload.sourceBlock,
-            sourceLocalId: payload.localId,
-            targetBlock: GENERAL_BLOCK_ID,
-          },
-        })
-      );
 
       clearGlobalDragPayload();
       void flushAllTaskSaves();
@@ -2119,12 +2334,157 @@ function toggleAndRepositionTask(tasks, idx) {
   window.addEventListener(WEEK_CHANGE_EVENT, () => {
     if (!isAuthed || !authUserId) return;
     void loadTasksForUser();
+    updateMoveRemainingBtn();
   });
 
   window.addEventListener("workspace-change", () => {
     if (!isAuthed || !authUserId) return;
     void loadTasksForUser();
+    updateMoveRemainingBtn();
   });
+
+  /**
+   * "Move remaining tasks" — на текущей неделе показывает кнопку, которая
+   * копирует все невыполненные general-задачи прошлой недели в текущую.
+   * Используется именно копирование (не перемещение), чтобы прошлая неделя
+   * сохранилась как исторический срез.
+   */
+  const moveRemainingBtn = document.getElementById("tasks-move-remaining");
+
+  function moveRemainingDoneKey(userId, weekIso, workspaceId) {
+    const ws = workspaceId ? `-${workspaceId}` : "";
+    return `oneweek-move-remaining-done-${userId}-${weekIso}${ws}`;
+  }
+
+  function isMoveRemainingDone(userId, weekIso, workspaceId) {
+    if (!userId) return false;
+    try {
+      return (
+        localStorage.getItem(moveRemainingDoneKey(userId, weekIso, workspaceId)) === "1"
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function markMoveRemainingDone(userId, weekIso, workspaceId) {
+    if (!userId) return;
+    try {
+      localStorage.setItem(moveRemainingDoneKey(userId, weekIso, workspaceId), "1");
+    } catch {
+      /* storage blocked */
+    }
+  }
+
+  function updateMoveRemainingBtn() {
+    if (!moveRemainingBtn) return;
+    const offset = Number(window.__weekOffset || 0);
+    const weekIso = getVisibleWeekMondayIso();
+    const workspaceId = getActiveWorkspaceId();
+    const shouldShow =
+      isAuthed &&
+      offset === 0 &&
+      !isMoveRemainingDone(authUserId, weekIso, workspaceId);
+    moveRemainingBtn.hidden = !shouldShow;
+  }
+
+  async function moveRemainingFromLastWeek() {
+    if (!supabase || !isAuthed || !authUserId) return;
+    if (Number(window.__weekOffset || 0) !== 0) return;
+
+    const workspaceId = getActiveWorkspaceId();
+    const lastWeekIso = toIsoDateFromDate(getWeekMondayStart(new Date(), -1));
+    const currentWeekIso = getVisibleWeekMondayIso();
+
+    let query = supabase
+      .from("tasks")
+      .select("content, is_subtask, color, position")
+      .eq("user_id", authUserId)
+      .eq("type", "general")
+      .eq("date", lastWeekIso)
+      .eq("completed", false);
+    if (workspaceId) query = query.eq("workspace_id", workspaceId);
+
+    const { data, error } = await query
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      markNetworkFailure(error);
+      console.error("Move remaining: load failed:", error);
+      return;
+    }
+    markNetworkSuccess();
+
+    const rows = (data ?? []).filter((r) => !isTaskEmptyText(r.content));
+    if (rows.length === 0) {
+      markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
+      return;
+    }
+
+    await flushAllTaskSaves();
+
+    const basePosition = state.tasks.length;
+    const inserts = rows.map((row, i) => {
+      const payload = {
+        user_id: authUserId,
+        content: String(row.content ?? ""),
+        completed: false,
+        type: "general",
+        date: currentWeekIso,
+        is_subtask: !!row.is_subtask,
+        color: normalizeTaskColor(row.color),
+        position: basePosition + i,
+      };
+      if (workspaceId) payload.workspace_id = workspaceId;
+      return payload;
+    });
+
+    const { data: inserted, error: insertErr } = await supabase
+      .from("tasks")
+      .insert(inserts)
+      .select("id");
+
+    if (insertErr) {
+      markNetworkFailure(insertErr);
+      console.error("Move remaining: insert failed:", insertErr);
+      return;
+    }
+    markNetworkSuccess();
+
+    const newTasks = rows.map((row, i) => ({
+      id: `task-${state.nextId++}`,
+      dbId: inserted?.[i]?.id ?? null,
+      text: String(row.content ?? ""),
+      checked: false,
+      subtask: !!row.is_subtask,
+      color: normalizeTaskColor(row.color),
+      position: basePosition + i,
+      _dirty: false,
+    }));
+
+    state.tasks = [...state.tasks, ...newTasks];
+    normalizeSubtaskFlags(state.tasks);
+    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    syncPositionsFromArray(state.tasks);
+    render();
+
+    markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
+  }
+
+  if (moveRemainingBtn) {
+    moveRemainingBtn.addEventListener("click", async () => {
+      if (moveRemainingBtn.disabled) return;
+      moveRemainingBtn.disabled = true;
+      try {
+        await moveRemainingFromLastWeek();
+      } finally {
+        moveRemainingBtn.disabled = false;
+        updateMoveRemainingBtn();
+      }
+    });
+  }
+  updateMoveRemainingBtn();
 
   void initAuth();
 })();
@@ -2560,6 +2920,23 @@ function toggleAndRepositionTask(tasks, idx) {
       const idx = getTaskIndex(taskId);
       if (idx === -1) return;
       const task = state.tasks[idx];
+
+      oneweekPushUndo({
+        blockId,
+        type: "delete",
+        dayName: dayMeta.dayName,
+        date: dayMeta.date,
+        workspaceId: getActiveWorkspaceId(),
+        userId: currentUserId,
+        position: idx,
+        snapshot: {
+          text: task.text,
+          checked: !!task.checked,
+          subtask: !!task.subtask,
+          color: normalizeTaskColor(task.color),
+        },
+      });
+
       if (task.dbId) void deleteTaskFromDb(task);
       state.focusAfterRender = null;
       state.tasks.splice(idx, 1);
@@ -2567,6 +2944,37 @@ function toggleAndRepositionTask(tasks, idx) {
       schedulePersistTaskPositions();
       render();
     }
+
+    oneweekRegisterUndoHandler(blockId, async (entry) => {
+      if (entry.type !== "delete") return false;
+      if (!currentUserId || entry.userId !== currentUserId) return false;
+      if (entry.dayName !== dayMeta.dayName || entry.date !== dayMeta.date) {
+        return false;
+      }
+      if ((entry.workspaceId || null) !== (getActiveWorkspaceId() || null)) {
+        return false;
+      }
+      const s = entry.snapshot || {};
+      const restored = createTask(
+        moveTimeToStart(s.text ?? ""),
+        !!s.checked,
+        null,
+        !!s.subtask,
+        normalizeTaskColor(s.color)
+      );
+      const at = Math.max(0, Math.min(entry.position ?? state.tasks.length, state.tasks.length));
+      state.tasks.splice(at, 0, restored);
+      stabilizeTimeSorted();
+      normalizeSubtaskFlags(state.tasks);
+      state.focusAfterRender = { id: restored.id };
+      if (!isTaskEmptyText(restored.text)) {
+        markTaskDirty(restored);
+        void persistTask(restored);
+      }
+      schedulePersistTaskPositions();
+      render();
+      return true;
+    });
 
     async function syncTaskFromInput(taskId) {
       const idx = getTaskIndex(taskId);
@@ -2646,6 +3054,7 @@ function toggleAndRepositionTask(tasks, idx) {
     }
 
     function render() {
+      const beforeRects = captureTaskRowRects(tasksEl);
       tasksEl.innerHTML = "";
 
       // Keep the cache aligned with the live view (offline edits survive reload).
@@ -2667,13 +3076,19 @@ function toggleAndRepositionTask(tasks, idx) {
       const list = document.createElement("div");
       list.className = "tasks-list";
 
-      for (const task of state.tasks) {
+      // See the general-panel render for the rationale behind the anchor class.
+      const firstCompletedMainIdx = state.tasks.findIndex(
+        (t) => t.checked && !t.subtask
+      );
+
+      for (let i = 0; i < state.tasks.length; i++) {
+        const task = state.tasks[i];
         const taskId = task.id;
 
         const row = document.createElement("div");
         row.className = `task-row${task.checked ? " completed" : ""}${
           task.subtask ? " task-row-sub" : ""
-        }`;
+        }${i === firstCompletedMainIdx ? " task-row-completed-anchor" : ""}`;
         row.dataset.id = taskId;
 
         const checkbox = document.createElement("button");
@@ -2886,6 +3301,8 @@ function toggleAndRepositionTask(tasks, idx) {
       tasksEl.querySelectorAll(".task-text").forEach((el) => {
         autoSizeTextarea(el);
       });
+
+      playTaskRowFlip(tasksEl, beforeRects);
 
       if (state.focusAfterRender) {
         const { id, start, end } = state.focusAfterRender;
@@ -3125,14 +3542,31 @@ function toggleAndRepositionTask(tasks, idx) {
 
         hideAllTaskDropIndicators();
 
-        await flushAllTaskSaves();
-
         const textNorm = moveTimeToStart(payload.text);
         const checked = !!payload.checked;
         const sub = !!payload.subtask;
         const color = normalizeTaskColor(payload.color);
-
         const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
+
+        window.dispatchEvent(
+          new CustomEvent("task-cross-move", {
+            detail: {
+              sourceBlock: payload.sourceBlock,
+              sourceLocalId: payload.localId,
+              targetBlock: blockId,
+            },
+          })
+        );
+
+        const moved = createTask(textNorm, checked, payload.dbId || null, sub, color);
+        state.tasks.splice(safeInsertAt, 0, moved);
+        stabilizeTimeSorted();
+        normalizeSubtaskFlags(state.tasks);
+        schedulePersistTaskPositions();
+        state.focusAfterRender = { id: moved.id };
+        render();
+
+        await flushAllTaskSaves();
 
         if (payload.dbId) {
           const { ok, error } = await supabaseRelocateTaskRow(supabase, currentUserId, payload.dbId, {
@@ -3152,28 +3586,10 @@ function toggleAndRepositionTask(tasks, idx) {
           }
         }
 
-        const moved = createTask(textNorm, checked, payload.dbId || null, sub, color);
-        state.tasks.splice(safeInsertAt, 0, moved);
-        stabilizeTimeSorted();
-        normalizeSubtaskFlags(state.tasks);
-        schedulePersistTaskPositions();
-        state.focusAfterRender = { id: moved.id };
-        render();
-
         if (!payload.dbId && !isTaskEmptyText(textNorm)) {
           markTaskDirty(moved);
           await persistTask(moved);
         }
-
-        window.dispatchEvent(
-          new CustomEvent("task-cross-move", {
-            detail: {
-              sourceBlock: payload.sourceBlock,
-              sourceLocalId: payload.localId,
-              targetBlock: blockId,
-            },
-          })
-        );
 
         clearGlobalDragPayload();
         void flushAllTaskSaves();
@@ -3301,6 +3717,23 @@ function toggleAndRepositionTask(tasks, idx) {
     );
   }
 
+  /**
+   * Re-trigger the CSS week-switch animation. We toggle a class via
+   * `force reflow → add` so the animation restarts cleanly even when the
+   * user mashes the week arrows.
+   */
+  function playWeekSwitchAnimation() {
+    const layout = document.querySelector(".layout");
+    if (!layout) return;
+    layout.classList.remove("is-week-switching");
+    void layout.offsetWidth;
+    layout.classList.add("is-week-switching");
+    window.clearTimeout(playWeekSwitchAnimation._timer);
+    playWeekSwitchAnimation._timer = window.setTimeout(() => {
+      layout.classList.remove("is-week-switching");
+    }, 320);
+  }
+
   function shiftWeek(delta) {
     void (async () => {
       if (typeof window.__flushAllTaskSaves === "function") {
@@ -3311,6 +3744,7 @@ function toggleAndRepositionTask(tasks, idx) {
       updateDayOfMonthLabels();
       updateWeekNavLabel();
       renderWeeksList();
+      playWeekSwitchAnimation();
       window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
     })();
   }
@@ -3320,11 +3754,13 @@ function toggleAndRepositionTask(tasks, idx) {
       if (typeof window.__flushAllTaskSaves === "function") {
         await window.__flushAllTaskSaves();
       }
+      const previous = Number(window.__weekOffset || 0);
       window.__weekOffset = offset;
       syncWeekAwayClass();
       updateDayOfMonthLabels();
       updateWeekNavLabel();
       renderWeeksList();
+      if (previous !== offset) playWeekSwitchAnimation();
       window.dispatchEvent(new CustomEvent(WEEK_CHANGE_EVENT));
     })();
   }
@@ -3931,9 +4367,16 @@ window.addEventListener("load", () => {
     const panel = row.querySelector(":scope > .task-row-actions");
     if (!panel) return;
     const rect = row.getBoundingClientRect();
-    panel.style.top = `${rect.bottom + 6}px`;
     panel.style.left = `${rect.left}px`;
     panel.style.width = `${rect.width}px`;
+    // Completed rows live at the bottom of the tasks field — drop the popover
+    // above the row instead of below so it doesn't fall off the screen.
+    if (row.classList.contains("completed")) {
+      const panelHeight = panel.getBoundingClientRect().height;
+      panel.style.top = `${rect.top - panelHeight - 6}px`;
+    } else {
+      panel.style.top = `${rect.bottom + 6}px`;
+    }
   }
 
   let rafId = null;
@@ -3968,3 +4411,177 @@ window.addEventListener("load", () => {
   scheduleUpdate();
 })();
 
+/**
+ * Guest auth modal — full-screen blurred overlay shown when the user has no
+ * Supabase session. One submit button does both login and signup:
+ *
+ *   1. Try sign-in. If it succeeds, the auth state change closes the modal.
+ *   2. If sign-in fails with "invalid credentials" / "user not found" /
+ *      "email not confirmed", try sign-up. On success, show the
+ *      "confirm your email" message.
+ *   3. Other errors surface as red text under the form.
+ */
+(function setupGuestAuthModal() {
+  const backdrop = document.getElementById("guest-auth-backdrop");
+  const form = document.getElementById("guest-auth-form");
+  const emailInput = document.getElementById("guest-auth-email");
+  const passwordInput = document.getElementById("guest-auth-password");
+  const submitBtn = document.getElementById("guest-auth-submit");
+  const messageEl = document.getElementById("guest-auth-message");
+  const messageSlot = document.getElementById("guest-auth-message-slot");
+  if (!backdrop || !form || !emailInput || !passwordInput || !submitBtn) return;
+
+  const supabase = window.supabaseClient;
+  if (!supabase) return;
+
+  function setMessage(text, isError = false) {
+    if (!messageEl) return;
+    messageEl.textContent = text || "";
+    messageEl.classList.toggle("is-error", !!isError && !!text);
+    // The slot animates open/closed via CSS (`grid-template-rows`). We keep
+    // the text in the DOM (instead of using `hidden`) so the modal smoothly
+    // grows when a new message comes in instead of snapping.
+    if (messageSlot) messageSlot.classList.toggle("is-shown", !!text);
+  }
+
+  function setPending(isPending) {
+    submitBtn.disabled = isPending;
+    emailInput.disabled = isPending;
+    passwordInput.disabled = isPending;
+    submitBtn.textContent = isPending ? "..." : "Sign in / Sign up";
+  }
+
+  function show() {
+    if (!backdrop.hidden) return;
+    backdrop.hidden = false;
+    // Give the browser a tick to mount, then focus the email field.
+    requestAnimationFrame(() => emailInput.focus({ preventScroll: true }));
+  }
+
+  function hide() {
+    if (backdrop.hidden) return;
+    backdrop.hidden = true;
+    setMessage("");
+    setPending(false);
+    form.reset();
+  }
+
+  /** Did sign-in fail specifically because no account exists with this email
+   *  (or wrong password — Supabase intentionally collapses both into the same
+   *  message to prevent user enumeration)? In either case it's safe to try a
+   *  sign-up: if the account already exists, the sign-up will report it. */
+  function looksLikeMissingAccount(error) {
+    const msg = String(error?.message || error || "").toLowerCase();
+    return (
+      msg.includes("invalid login") ||
+      msg.includes("invalid credentials") ||
+      msg.includes("user not found")
+    );
+  }
+
+  function looksLikeUnconfirmedEmail(error) {
+    const msg = String(error?.message || error || "").toLowerCase();
+    return msg.includes("email not confirmed") || msg.includes("not confirmed");
+  }
+
+  function showConfirmEmailMessage(email) {
+    const target = email ? ` to ${email}` : "";
+    setMessage(
+      `We sent a confirmation link${target}. Open it to finish signing in.`
+    );
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    if (!email || !password) {
+      setMessage("Enter your email and password.", true);
+      return;
+    }
+
+    setPending(true);
+    setMessage("Signing in...");
+
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (!signInError) {
+      // onAuthStateChange will hide the modal.
+      setMessage("");
+      setPending(false);
+      return;
+    }
+
+    // Account exists but the user hasn't clicked the confirmation link yet —
+    // re-send the email (best-effort) and surface a clear message.
+    if (looksLikeUnconfirmedEmail(signInError)) {
+      try {
+        await supabase.auth.resend({ type: "signup", email });
+      } catch (_) {
+        /* best-effort resend — original message still tells the user what to do */
+      }
+      setPending(false);
+      showConfirmEmailMessage(email);
+      return;
+    }
+
+    if (!looksLikeMissingAccount(signInError)) {
+      setPending(false);
+      setMessage(signInError.message || "Couldn't sign in.", true);
+      return;
+    }
+
+    // Either no such account, or correct email + wrong password. Try sign-up:
+    // if Supabase responds "already registered", we know it was the password.
+    setMessage("Creating account...");
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password,
+    });
+
+    setPending(false);
+
+    if (signUpError) {
+      const msg = String(signUpError.message || "").toLowerCase();
+      if (msg.includes("already registered") || msg.includes("already been registered")) {
+        setMessage("Wrong password for this email.", true);
+      } else {
+        setMessage(signUpError.message || "Couldn't create account.", true);
+      }
+      return;
+    }
+
+    // With email confirmation OFF, Supabase returns a session immediately and
+    // onAuthStateChange closes the modal. With confirmation ON (the current
+    // setup), there's no session yet — tell the user to check their inbox.
+    if (signUpData?.session) {
+      setMessage("");
+      return;
+    }
+    showConfirmEmailMessage(email);
+  }
+
+  form.addEventListener("submit", handleSubmit);
+
+  async function applySession(session) {
+    if (session?.user) hide();
+    else show();
+  }
+
+  (async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      await applySession(data?.session ?? null);
+    } catch (err) {
+      console.error("Guest auth init failed:", err);
+      show();
+    }
+  })();
+
+  supabase.auth.onAuthStateChange((_event, session) => {
+    void applySession(session);
+  });
+})();

@@ -272,3 +272,89 @@
 
   render();
 })();
+
+/**
+ * Sidebar workspace switcher (mobile-only via CSS). Mirrors the header tabs
+ * but as a single <select>. Sources state from window.oneweekWorkspaces, so
+ * both UIs stay in sync without extra wiring.
+ */
+(() => {
+  const section = document.getElementById("sidebar-section-workspaces");
+  const select = document.getElementById("sidebar-workspace-select");
+  const deleteActions = document.getElementById(
+    "sidebar-workspace-delete-actions"
+  );
+  const deleteBtn = document.getElementById("sidebar-workspace-delete");
+  if (!section || !select || !deleteActions || !deleteBtn) return;
+
+  const ws = window.oneweekWorkspaces;
+  if (!ws) return;
+
+  const MAIN_NAME = "main";
+  /** Sentinel value used for the "Add..." pseudo-option at the bottom of
+   *  the select. Anything starting with this prefix is treated as "not a
+   *  real workspace id" so it can never collide with a UUID. */
+  const ADD_SENTINEL = "__add__";
+
+  function render() {
+    const items = ws.getList();
+    const activeId = ws.getActiveId();
+
+    section.hidden = items.length === 0;
+
+    select.innerHTML = "";
+    for (const item of items) {
+      const opt = document.createElement("option");
+      opt.value = item.id;
+      opt.textContent = item.name;
+      select.appendChild(opt);
+    }
+
+    const addOpt = document.createElement("option");
+    addOpt.value = ADD_SENTINEL;
+    addOpt.textContent = "Add workspace...";
+    select.appendChild(addOpt);
+
+    const next = activeId || items[0]?.id || "";
+    if (next) select.value = next;
+
+    const activeItem = items.find((w) => w.id === next);
+    const isMain =
+      !activeItem ||
+      activeItem.name.trim().toLowerCase() === MAIN_NAME;
+    const canDelete = !isMain && items.length > 1;
+    deleteActions.hidden = !canDelete;
+  }
+
+  select.addEventListener("change", () => {
+    const value = select.value;
+    if (value === ADD_SENTINEL) {
+      // Bounce the select back to the current active workspace before
+      // creating, so the dropdown doesn't briefly read "Add workspace..."
+      // while the async create resolves.
+      const activeId = ws.getActiveId();
+      if (activeId) select.value = activeId;
+      void ws.create();
+      return;
+    }
+    if (value) void ws.setActive(value);
+  });
+
+  deleteBtn.addEventListener("click", async () => {
+    const id = ws.getActiveId();
+    if (!id) return;
+    const items = ws.getList();
+    if (items.length <= 1) return;
+    const item = items.find((w) => w.id === id);
+    const msg = item
+      ? `Delete workspace "${item.name}"?`
+      : "Delete workspace?";
+    if (typeof window.confirm === "function" && !window.confirm(msg)) return;
+    await ws.remove(id);
+  });
+
+  window.addEventListener(ws.WORKSPACE_LIST_CHANGE, render);
+  window.addEventListener(ws.WORKSPACE_CHANGE, render);
+
+  render();
+})();
