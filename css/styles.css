@@ -768,10 +768,30 @@ h1 {
 .weeks-list li {
   position: relative;
   z-index: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6em;
+  min-width: 0;
   padding-block: 0.38em;
   padding-inline: var(--weeks-item-bleed, 0.5em);
   cursor: pointer;
   border-radius: 0.35em;
+}
+
+.weeks-list-dates {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.weeks-list-tag {
+  flex: 0 0 auto;
+  opacity: 0.45;
+  white-space: nowrap;
+}
+
+.weeks-list li.week-active .weeks-list-tag {
+  opacity: 0.55;
 }
 
 .weeks-list li::before {
@@ -923,6 +943,9 @@ h1 {
   overflow: auto;
   cursor: text;
   position: relative;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text) 30%, transparent) transparent;
 }
 
 .tasks-field-header {
@@ -1450,32 +1473,6 @@ h1 {
     margin-top: 0.5em;
   }
 
-  /* Active row border: extend the frame left so the outline clears the
-     checkbox; padding compensates so the checkbox stays put. */
-  .task-row:has(.task-text:focus),
-  .task-row:has(.task-commit:focus),
-  .task-row:has(.task-delete:focus),
-  .task-row:has(.task-color:focus),
-  .task-row:has(.task-drag-handle:focus),
-  .task-row.task-row-reorder-active,
-  .task-row.task-row-dragging,
-  .task-row.task-row-color-open {
-    --task-row-border-gap: 0.3em;
-    margin-left: calc(-1 * var(--task-row-border-gap));
-    padding-left: calc(0.45em + var(--task-row-border-gap));
-  }
-
-  .task-row.task-row-sub:has(.task-text:focus),
-  .task-row.task-row-sub:has(.task-commit:focus),
-  .task-row.task-row-sub:has(.task-delete:focus),
-  .task-row.task-row-sub:has(.task-color:focus),
-  .task-row.task-row-sub:has(.task-drag-handle:focus),
-  .task-row.task-row-sub.task-row-reorder-active,
-  .task-row.task-row-sub.task-row-dragging,
-  .task-row.task-row-sub.task-row-color-open {
-    padding-left: calc(2em + var(--task-row-border-gap));
-  }
-
 
   .tasks-field {
     min-height: 0;
@@ -1525,6 +1522,7 @@ h1 {
 .task-row {
   --task-line: 1.2em;
   --task-pad-y: 0.28em;
+  --task-scroll-gutter: 0.35em;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -1533,6 +1531,10 @@ h1 {
   border: 0.07em solid transparent;
   border-radius: 0.4em;
   color: var(--color-text);
+}
+
+.task-row:has(.task-subtask-toggle-wrap) {
+  padding-right: calc(0.38em + var(--task-scroll-gutter));
 }
 
 .task-row:has(.task-text:focus),
@@ -1631,6 +1633,60 @@ h1 {
   background: var(--color-background);
   padding: 0;
   cursor: pointer;
+}
+
+.task-subtask-toggle-wrap {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  margin-left: auto;
+}
+
+.task-subtask-count {
+  display: none;
+  font-size: 0.65em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  opacity: 0.45;
+  color: var(--color-text);
+}
+
+.task-subtask-toggle-wrap.is-collapsed .task-subtask-count {
+  display: block;
+}
+
+.task-subtask-toggle {
+  flex: 0 0 auto;
+  width: 0.85em;
+  height: 0.85em;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.55;
+  color: var(--color-text);
+}
+
+.task-subtask-toggle::after {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-color: currentColor;
+  mask: url("../selector.svg") center / contain no-repeat;
+  -webkit-mask: url("../selector.svg") center / contain no-repeat;
+  transition: transform 0.15s ease;
+}
+
+.task-subtask-toggle.is-collapsed::after {
+  transform: rotate(-90deg);
+}
+
+.task-subtask-toggle:hover {
+  opacity: 0.85;
 }
 
 .task-checkbox.checked {
@@ -2012,6 +2068,7 @@ h1 {
   cursor: text;
   display: block;
   position: relative;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--color-text) 30%, transparent) transparent;
   -webkit-overflow-scrolling: touch;
@@ -2168,6 +2225,34 @@ h1 {
     gap: 0.3em;
   }
 
+  /* Active row: gap between border and checkbox; negative margin keeps the
+     checkbox from jumping when padding-left is added for the gap. */
+  .task-row:has(.task-text:focus),
+  .task-row:has(.task-commit:focus),
+  .task-row:has(.task-delete:focus),
+  .task-row:has(.task-color:focus),
+  .task-row:has(.task-drag-handle:focus),
+  .task-row.task-row-reorder-active,
+  .task-row.task-row-dragging,
+  .task-row.task-row-color-open {
+    --task-row-border-gap: 0.25em;
+    margin-left: calc(-1 * var(--task-row-border-gap));
+    padding-left: var(--task-row-border-gap);
+  }
+
+  .task-row.task-row-sub:has(.task-text:focus),
+  .task-row.task-row-sub:has(.task-commit:focus),
+  .task-row.task-row-sub:has(.task-delete:focus),
+  .task-row.task-row-sub:has(.task-color:focus),
+  .task-row.task-row-sub:has(.task-drag-handle:focus),
+  .task-row.task-row-sub.task-row-reorder-active,
+  .task-row.task-row-sub.task-row-dragging,
+  .task-row.task-row-sub.task-row-color-open {
+    padding-left: calc(1.5em + var(--task-row-border-gap));
+  }
+
+  /* Multiline: keep checkbox at the top, but nudge text down to match the
+     vertical offset single-line rows get from align-items: center. */
   .task-row.task-row-multiline .task-checkbox {
     margin-top: 0;
   }

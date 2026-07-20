@@ -669,6 +669,39 @@ function syncTaskColorButton(btn, color) {
 }
 
 let activeColorPicker = null;
+let pendingBlurCommitTimer = null;
+
+/** Defer blur→commit so mobile tap on action buttons (color, etc.) can cancel it. */
+function scheduleTaskBlurCommit(commitFn, shouldSkip) {
+  if (pendingBlurCommitTimer != null) {
+    clearTimeout(pendingBlurCommitTimer);
+  }
+  pendingBlurCommitTimer = setTimeout(() => {
+    pendingBlurCommitTimer = null;
+    if (shouldSkip?.()) return;
+    if (activeColorPicker) return;
+    if (document.querySelector(".task-color-popover")) return;
+    const ae = document.activeElement;
+    if (ae?.closest?.(".task-row-actions")) return;
+    void commitFn();
+  }, 50);
+}
+
+document.addEventListener(
+  "pointerdown",
+  (e) => {
+    if (
+      e.target.closest?.(".task-row-actions") ||
+      e.target.closest?.(".task-color-popover")
+    ) {
+      if (pendingBlurCommitTimer != null) {
+        clearTimeout(pendingBlurCommitTimer);
+        pendingBlurCommitTimer = null;
+      }
+    }
+  },
+  true
+);
 
 function closeTaskColorPicker(restoreFocus = false) {
   if (!activeColorPicker) return;
@@ -1163,6 +1196,73 @@ function partitionUncheckedBeforeChecked(tasks) {
     result.push(g.main, ...g.subs);
   }
   return result;
+}
+
+const collapsedSubtaskParents = new Set();
+
+function mainTaskHasSubtasks(tasks, mainIdx) {
+  if (mainIdx < 0 || mainIdx >= tasks.length) return false;
+  if (tasks[mainIdx].subtask) return false;
+  return mainIdx + 1 < tasks.length && tasks[mainIdx + 1].subtask;
+}
+
+function getParentMainTaskId(tasks, subtaskIdx) {
+  for (let j = subtaskIdx - 1; j >= 0; j--) {
+    if (!tasks[j].subtask) return tasks[j].id;
+  }
+  return null;
+}
+
+function isSubtaskRowHidden(tasks, idx) {
+  const task = tasks[idx];
+  if (!task?.subtask) return false;
+  const parentId = getParentMainTaskId(tasks, idx);
+  return parentId != null && collapsedSubtaskParents.has(parentId);
+}
+
+function countSubtasksForMain(tasks, mainIdx) {
+  if (!mainTaskHasSubtasks(tasks, mainIdx)) return 0;
+  return indexAfterSubtreeOfMain(tasks, mainIdx) - mainIdx - 1;
+}
+
+function createSubtaskToggle(mainTaskId, subtaskCount, onToggle) {
+  const wrap = document.createElement("div");
+  wrap.className = "task-subtask-toggle-wrap";
+
+  const countEl = document.createElement("span");
+  countEl.className = "task-subtask-count";
+  countEl.textContent = String(subtaskCount);
+  countEl.setAttribute("aria-hidden", "true");
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "task-subtask-toggle";
+  const collapsed = collapsedSubtaskParents.has(mainTaskId);
+  if (collapsed) {
+    btn.classList.add("is-collapsed");
+    wrap.classList.add("is-collapsed");
+  }
+  btn.setAttribute(
+    "aria-label",
+    collapsed
+      ? `Show ${subtaskCount} subtask${subtaskCount === 1 ? "" : "s"}`
+      : "Hide subtasks"
+  );
+  btn.setAttribute("aria-expanded", String(!collapsed));
+  btn.addEventListener("mousedown", (e) => e.preventDefault());
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (collapsedSubtaskParents.has(mainTaskId)) {
+      collapsedSubtaskParents.delete(mainTaskId);
+    } else {
+      collapsedSubtaskParents.add(mainTaskId);
+    }
+    onToggle();
+  });
+
+  wrap.appendChild(countEl);
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 /**
@@ -1802,6 +1902,7 @@ function toggleAndRepositionTask(tasks, idx) {
       if (i === firstCompletedMainIdx) {
         list.appendChild(createTasksListAddSpacer());
       }
+      if (isSubtaskRowHidden(state.tasks, i)) continue;
       const task = state.tasks[i];
       const taskId = task.id;
       const row = document.createElement("div");
@@ -1853,6 +1954,15 @@ function toggleAndRepositionTask(tasks, idx) {
 
       row.appendChild(checkbox);
       row.appendChild(main);
+      if (mainTaskHasSubtasks(state.tasks, i)) {
+        row.appendChild(
+          createSubtaskToggle(
+            taskId,
+            countSubtasksForMain(state.tasks, i),
+            render
+          )
+        );
+      }
       row.appendChild(actions);
       list.appendChild(row);
 
@@ -2000,11 +2110,10 @@ function toggleAndRepositionTask(tasks, idx) {
       });
 
       input.addEventListener("blur", () => {
-        if (state.isDragging || taskDragInteractionActive) return;
-        if (activeColorPicker) return;
-        void (async () => {
-          await commitTask(taskId);
-        })();
+        scheduleTaskBlurCommit(
+          () => commitTask(taskId),
+          () => state.isDragging || taskDragInteractionActive
+        );
       });
     }
 
@@ -3128,6 +3237,7 @@ function toggleAndRepositionTask(tasks, idx) {
         if (i === firstCompletedMainIdx) {
           list.appendChild(createTasksListAddSpacer());
         }
+        if (isSubtaskRowHidden(state.tasks, i)) continue;
         const task = state.tasks[i];
         const taskId = task.id;
 
@@ -3180,6 +3290,15 @@ function toggleAndRepositionTask(tasks, idx) {
 
         row.appendChild(checkbox);
         row.appendChild(main);
+        if (mainTaskHasSubtasks(state.tasks, i)) {
+          row.appendChild(
+            createSubtaskToggle(
+              taskId,
+              countSubtasksForMain(state.tasks, i),
+              render
+            )
+          );
+        }
         row.appendChild(actions);
         list.appendChild(row);
 
@@ -3333,11 +3452,10 @@ function toggleAndRepositionTask(tasks, idx) {
         });
 
         input.addEventListener("blur", () => {
-          if (state.isDragging || taskDragInteractionActive) return;
-          if (activeColorPicker) return;
-          void (async () => {
-            await commitTask(taskId);
-          })();
+          scheduleTaskBlurCommit(
+            () => commitTask(taskId),
+            () => state.isDragging || taskDragInteractionActive
+          );
         });
       }
 
@@ -3812,7 +3930,20 @@ function toggleAndRepositionTask(tasks, idx) {
     })();
   }
 
-  const MONTH_NAMES = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+  const MONTH_NAMES = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+  ];
 
   function formatWeekLabel(mondayDate) {
     const mon = new Date(mondayDate);
@@ -3822,7 +3953,7 @@ function toggleAndRepositionTask(tasks, idx) {
     const m1 = MONTH_NAMES[mon.getMonth()];
     const d2 = sun.getDate();
     const m2 = MONTH_NAMES[sun.getMonth()];
-    return `${d1}${m1} — ${d2}${m2}`;
+    return `${d1} ${m1} — ${d2} ${m2}`;
   }
 
   function getWeekNavLabel(offset) {
@@ -3853,12 +3984,24 @@ function toggleAndRepositionTask(tasks, idx) {
       const monday = getWeekMondayStart(new Date(), offset);
       const dateLabel = formatWeekLabel(monday);
       const li = document.createElement("li");
-      let name;
-      if (offset === 0) name = `${dateLabel} (now)`;
-      else if (offset === 1) name = `${dateLabel} (next week)`;
-      else if (offset === -1) name = `${dateLabel} (last week)`;
-      else name = dateLabel;
-      li.textContent = name;
+
+      const dates = document.createElement("span");
+      dates.className = "weeks-list-dates";
+      dates.textContent = dateLabel;
+      li.appendChild(dates);
+
+      let tagText = null;
+      if (offset === 0) tagText = "now";
+      else if (offset === 1) tagText = "next week";
+      else if (offset === -1) tagText = "last week";
+
+      if (tagText) {
+        const tag = document.createElement("span");
+        tag.className = "weeks-list-tag";
+        tag.textContent = tagText;
+        li.appendChild(tag);
+      }
+
       if (offset === currentOffset) li.classList.add("week-active");
       li.addEventListener("click", () => setWeekOffset(offset));
       weeksList.appendChild(li);
