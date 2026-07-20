@@ -682,8 +682,11 @@ h1 {
 
 .sidebar-select,
 .sidebar-input {
-  font: inherit;
   font-family: inherit;
+  font-weight: inherit;
+  font-style: inherit;
+  font-variant: inherit;
+  font-size: inherit;
   color: inherit;
   background: var(--color-background);
   border: 0.07em solid var(--color-border);
@@ -799,15 +802,28 @@ h1 {
   display: none !important;
 }
 
-.sidebar-actions button,
-.task-commit,
-.task-delete {
+.sidebar-actions button {
   font: inherit;
   color: inherit;
   background: transparent;
   border-radius: 0.4em;
   border: 0.07em solid var(--color-border);
   padding: 0.25em 0.5em;
+  cursor: pointer;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.task-row-actions .task-commit,
+.task-row-actions .task-delete {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border-radius: 0.4em;
+  border: 0.07em solid var(--color-border);
+  padding: 0;
   cursor: pointer;
   line-height: 1;
   display: inline-flex;
@@ -933,7 +949,13 @@ h1 {
   border-radius: 0.4em;
   padding: 0.35em 0.7em;
   cursor: pointer;
-  line-height: 1.2;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  -webkit-appearance: none;
+  appearance: none;
   opacity: 0.55;
   transition: opacity 0.15s ease, background-color 0.15s ease;
 }
@@ -1026,7 +1048,11 @@ h1 {
 }
 
 .guest-auth-input {
-  font: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+  font-style: inherit;
+  font-variant: inherit;
+  font-size: inherit;
   color: inherit;
   background: transparent;
   border: 0.07em solid var(--color-border);
@@ -1205,7 +1231,7 @@ h1 {
   }
 
   body {
-    font-size: clamp(14px, 3.75vw, 17px);
+    font-size: clamp(16px, 3.75vw, 17px);
     overflow: visible;
     /* Defined on body so .layout can use it for padding-top reservation
        (the header itself is position:fixed and outside .layout's box). */
@@ -1367,11 +1393,44 @@ h1 {
     overflow: visible;
   }
 
+  .week-grid > .rectangle:nth-child(1) {
+    border-top-left-radius: var(--radius-shell);
+  }
+
+  .week-grid > .rectangle:nth-child(2) {
+    border-top-right-radius: var(--radius-shell);
+  }
+
   .week-grid > .rectangle {
     min-height: 10rem;
   }
 
   .day-tasks {
+    overflow: visible;
+  }
+
+  /* Lift the whole day / general-tasks block while a row is active so the
+     actions popover (position:absolute below the row) paints above neighbors. */
+  .day-rect:has(.task-row:has(.task-text:focus)),
+  .day-rect:has(.task-row:has(.task-commit:focus)),
+  .day-rect:has(.task-row:has(.task-delete:focus)),
+  .day-rect:has(.task-row:has(.task-color:focus)),
+  .day-rect:has(.task-row:has(.task-drag-handle:focus)),
+  .day-rect:has(.task-row.task-row-reorder-active),
+  .day-rect:has(.task-row.task-row-color-open),
+  .tasks-field:has(.task-row:has(.task-text:focus)),
+  .tasks-field:has(.task-row:has(.task-commit:focus)),
+  .tasks-field:has(.task-row:has(.task-delete:focus)),
+  .tasks-field:has(.task-row:has(.task-color:focus)),
+  .tasks-field:has(.task-row:has(.task-drag-handle:focus)),
+  .tasks-field:has(.task-row.task-row-reorder-active),
+  .tasks-field:has(.task-row.task-row-color-open) {
+    position: relative;
+    z-index: 50;
+    overflow: visible;
+  }
+
+  .day-rect {
     overflow: visible;
   }
 
@@ -1389,6 +1448,32 @@ h1 {
 
   .task-row + .task-row {
     margin-top: 0.5em;
+  }
+
+  /* Active row border: extend the frame left so the outline clears the
+     checkbox; padding compensates so the checkbox stays put. */
+  .task-row:has(.task-text:focus),
+  .task-row:has(.task-commit:focus),
+  .task-row:has(.task-delete:focus),
+  .task-row:has(.task-color:focus),
+  .task-row:has(.task-drag-handle:focus),
+  .task-row.task-row-reorder-active,
+  .task-row.task-row-dragging,
+  .task-row.task-row-color-open {
+    --task-row-border-gap: 0.3em;
+    margin-left: calc(-1 * var(--task-row-border-gap));
+    padding-left: calc(0.45em + var(--task-row-border-gap));
+  }
+
+  .task-row.task-row-sub:has(.task-text:focus),
+  .task-row.task-row-sub:has(.task-commit:focus),
+  .task-row.task-row-sub:has(.task-delete:focus),
+  .task-row.task-row-sub:has(.task-color:focus),
+  .task-row.task-row-sub:has(.task-drag-handle:focus),
+  .task-row.task-row-sub.task-row-reorder-active,
+  .task-row.task-row-sub.task-row-dragging,
+  .task-row.task-row-sub.task-row-color-open {
+    padding-left: calc(2em + var(--task-row-border-gap));
   }
 
 
@@ -1425,14 +1510,16 @@ h1 {
   padding-bottom: 0.3em;
 }
 
-/* Pin the completed MAIN-tasks stack to the bottom of the tasks field so
-   completed rows "fall" down and grow upward as more are added, with empty
-   space between them and the unchecked rows above.
-   The anchor class is set by the panel render code on the first completed
-   main row, regardless of how many completed subtasks sit ahead of it (which
-   a pure-CSS sibling selector can't express). */
+/* Completed rows sit at the bottom; the add-spacer above grows when there
+   is leftover height. JS may raise the spacer to 4em when the gap is tight. */
 .tasks-list > .task-row.task-row-completed-anchor {
   margin-top: auto;
+}
+
+.tasks-list-add-spacer {
+  flex: 1 1 auto;
+  min-height: 0;
+  cursor: text;
 }
 
 .task-row {
@@ -1754,7 +1841,7 @@ h1 {
   opacity: 0.8;
 }
 
-.task-commit::after {
+.task-row-actions .task-commit::after {
   content: "";
   display: block;
   width: 0.75em;
@@ -1764,7 +1851,7 @@ h1 {
   mask: url("../check-mark.svg") center / contain no-repeat;
 }
 
-.task-delete::after {
+.task-row-actions .task-delete::after {
   content: "";
   display: block;
   width: 0.75em;
@@ -1863,7 +1950,11 @@ h1 {
   min-width: 0;
   min-height: var(--task-line);
   max-height: none;
-  font: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+  font-style: inherit;
+  font-variant: inherit;
+  font-size: inherit;
   border: 0;
   outline: none;
   background: transparent;
@@ -2030,6 +2121,42 @@ h1 {
   .sidebar-section-workspaces {
     display: none !important;
   }
+
+  .task-checkbox {
+    width: 1.4em;
+    height: 1.4em;
+  }
+
+  .task-row-actions {
+    gap: 0.45em;
+    padding: 0.4em 0.55em;
+  }
+
+  .task-row-actions .task-commit,
+  .task-row-actions .task-delete,
+  .task-row-actions .task-color,
+  .task-row-actions .task-drag-handle {
+    width: 2em;
+    height: 2em;
+    min-width: 2em;
+    min-height: 2em;
+  }
+
+  .task-row-actions .task-commit::after,
+  .task-row-actions .task-delete::after {
+    width: 0.88em;
+    height: 0.88em;
+  }
+
+  .task-row-actions .task-color-dot {
+    width: 0.82em;
+    height: 0.82em;
+  }
+
+  .task-row-actions .task-drag-handle-icon {
+    width: 0.65em;
+    height: 0.95em;
+  }
 }
 
 @media (max-width: 900px) {
@@ -2057,16 +2184,38 @@ h1 {
   }
 
   .task-row-actions {
-    position: fixed;
-    top: auto;
-    left: auto;
-    right: auto;
+    position: absolute;
+    top: calc(100% + 0.3em);
+    left: 0;
+    right: 0;
+    width: auto;
     transform: none;
     gap: 0.6em;
     padding: 0.7em 0.8em;
     justify-content: space-between;
     border-radius: 0.7em;
-    z-index: 100;
+    z-index: 1;
+  }
+
+  /* Portaled to body; top/left/width set in document coords by JS. */
+  .task-row-actions.is-mobile-portaled {
+    display: flex;
+    pointer-events: auto;
+    position: absolute;
+    z-index: 1000;
+    top: auto;
+    bottom: auto;
+    right: auto;
+    transform: none;
+  }
+
+  .task-row.completed .task-row-actions {
+    top: auto;
+    bottom: calc(100% + 0.3em);
+  }
+
+  .task-row.completed .task-row-actions.is-mobile-portaled {
+    bottom: auto;
   }
 
   .task-row-actions .task-commit,
@@ -2102,11 +2251,27 @@ h1 {
     height: 1.1em;
   }
 
-  /* The 3em buffer existed to keep the actions popover from being clipped by
-     the scroll container; on mobile there is no scroll container (the popover
-     is position:fixed), so the buffer is just visible whitespace below the
-     last task. */
+  /* Room for the actions popover below the last task in a list. */
   .tasks-list {
-    padding-bottom: 0.5em;
+    padding-bottom: 3em;
+  }
+
+  /* iOS Safari zooms the page when a focused field has font-size < 16px. */
+  .task-text,
+  .guest-auth-input,
+  .sidebar-input,
+  .sidebar-select,
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* Touch browsers (incl. iOS Safari): prevent auto text-size-adjust quirks. */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 }

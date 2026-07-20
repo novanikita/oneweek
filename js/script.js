@@ -615,6 +615,45 @@ function createTaskColorButton() {
   return btn;
 }
 
+/** Click target between unchecked and completed rows when the gap is tight. */
+function createTasksListAddSpacer() {
+  const el = document.createElement("div");
+  el.className = "tasks-list-add-spacer";
+  el.setAttribute("aria-hidden", "true");
+  return el;
+}
+
+/** Ensure at least 4em between open and completed tasks, but only when needed. */
+function syncTasksListMinGap(listEl) {
+  if (!listEl) return;
+  const spacer = listEl.querySelector(":scope > .tasks-list-add-spacer");
+  if (!spacer) return;
+
+  const anchor = listEl.querySelector(":scope > .task-row.task-row-completed-anchor");
+  spacer.style.minHeight = "0";
+  if (!anchor) return;
+
+  const lastOpen = spacer.previousElementSibling;
+  if (!lastOpen) return;
+
+  const gapPx = anchor.offsetTop - lastOpen.offsetTop - lastOpen.offsetHeight;
+  const minGapPx = parseFloat(getComputedStyle(listEl).fontSize) * 4;
+  spacer.style.minHeight = gapPx + 0.5 < minGapPx ? "4em" : "0";
+}
+
+let tasksListMinGapObserver = null;
+
+function observeTasksListMinGap(listEl) {
+  if (!listEl) return;
+  if (!tasksListMinGapObserver) {
+    tasksListMinGapObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) syncTasksListMinGap(entry.target);
+    });
+  }
+  tasksListMinGapObserver.observe(listEl);
+  syncTasksListMinGap(listEl);
+}
+
 function syncTaskColorButton(btn, color) {
   if (!btn) return;
   const dot = btn.querySelector(".task-color-dot");
@@ -1760,6 +1799,9 @@ function toggleAndRepositionTask(tasks, idx) {
     );
 
     for (let i = 0; i < state.tasks.length; i++) {
+      if (i === firstCompletedMainIdx) {
+        list.appendChild(createTasksListAddSpacer());
+      }
       const task = state.tasks[i];
       const taskId = task.id;
       const row = document.createElement("div");
@@ -1967,6 +2009,7 @@ function toggleAndRepositionTask(tasks, idx) {
     }
 
     tasksFieldRoot.appendChild(list);
+    observeTasksListMinGap(list);
 
     // Recalculate heights after mount so multiline values keep full height.
     tasksFieldRoot.querySelectorAll(".task-text").forEach((el) => {
@@ -3082,6 +3125,9 @@ function toggleAndRepositionTask(tasks, idx) {
       );
 
       for (let i = 0; i < state.tasks.length; i++) {
+        if (i === firstCompletedMainIdx) {
+          list.appendChild(createTasksListAddSpacer());
+        }
         const task = state.tasks[i];
         const taskId = task.id;
 
@@ -3296,6 +3342,7 @@ function toggleAndRepositionTask(tasks, idx) {
       }
 
       tasksEl.appendChild(list);
+      observeTasksListMinGap(list);
 
       // Recalculate heights after mount so multiline values keep full height.
       tasksEl.querySelectorAll(".task-text").forEach((el) => {
@@ -4322,10 +4369,9 @@ window.addEventListener("load", () => {
 });
 
 /**
- * Mobile-only: position the .task-row-actions popover as position:fixed so it can
- * escape the .day-tasks / .week-grid overflow clips. The CSS sets position:fixed
- * on mobile; this code computes top/left/width from the active task row's rect
- * and updates on focus, scroll, resize, and class mutations.
+ * Mobile-only: portal .task-row-actions to document.body and place it with
+ * position:absolute in *document* coordinates (rect + scroll offset). Unlike
+ * position:fixed, it scrolls with the task automatically — no scroll listener.
  */
 (function setupMobileActionPanelPositioner() {
   const MOBILE_MEDIA = window.matchMedia
@@ -4342,41 +4388,100 @@ window.addEventListener("load", () => {
     ".task-row.task-row-color-open",
   ].join(", ");
 
+  const portaledPanelByRow = new WeakMap();
+  const rowByPortaledPanel = new WeakMap();
+  let observedRow = null;
+  const rowResizeObserver = new ResizeObserver(() => scheduleUpdate());
+
   function isMobile() {
     return MOBILE_MEDIA ? MOBILE_MEDIA.matches : false;
   }
 
-  function clearAllPanels() {
-    document.querySelectorAll(".task-row-actions").forEach((panel) => {
-      panel.style.top = "";
-      panel.style.left = "";
-      panel.style.width = "";
-    });
+  function clearPanelStyles(panel) {
+    panel.style.top = "";
+    panel.style.left = "";
+    panel.style.width = "";
+    panel.style.right = "";
+    panel.style.bottom = "";
+  }
+
+  function unportalPanel(panel) {
+    if (!panel) return;
+    panel.classList.remove("is-mobile-portaled");
+    clearPanelStyles(panel);
+    const row = rowByPortaledPanel.get(panel);
+    rowByPortaledPanel.delete(panel);
+    if (row) portaledPanelByRow.delete(row);
+    if (panel.parentNode === document.body) {
+      if (row?.isConnected) row.appendChild(panel);
+      else panel.remove();
+    }
+  }
+
+  function unportalAllPanels() {
+    document.body.querySelectorAll(":scope > .task-row-actions").forEach(unportalPanel);
+  }
+
+  function getActionsPanel(row) {
+    if (!row) return null;
+    return portaledPanelByRow.get(row) || row.querySelector(":scope > .task-row-actions");
+  }
+
+  function portalPanel(panel, row) {
+    portaledPanelByRow.set(row, panel);
+    rowByPortaledPanel.set(panel, row);
+    panel.classList.add("is-mobile-portaled");
+    if (panel.parentNode !== document.body) document.body.appendChild(panel);
+  }
+
+  function positionPanel(panel, row) {
+    const scrollX = window.scrollX || 0;
+    const scrollY = window.scrollY || 0;
+    const rect = row.getBoundingClientRect();
+    panel.style.left = `${rect.left + scrollX}px`;
+    panel.style.width = `${rect.width}px`;
+    panel.style.right = "auto";
+    if (row.classList.contains("completed")) {
+      const panelHeight = panel.offsetHeight;
+      panel.style.top = `${rect.top + scrollY - panelHeight - 6}px`;
+    } else {
+      panel.style.top = `${rect.bottom + scrollY + 6}px`;
+    }
+    panel.style.bottom = "auto";
   }
 
   function update() {
     if (!isMobile()) {
-      clearAllPanels();
+      unportalAllPanels();
+      rowResizeObserver.disconnect();
+      observedRow = null;
       return;
     }
+
     const row = document.querySelector(ACTIVE_ROW_SELECTOR);
+
+    document.body.querySelectorAll(":scope > .task-row-actions").forEach((panel) => {
+      const ownerRow = rowByPortaledPanel.get(panel);
+      if (!ownerRow?.isConnected || ownerRow !== row) unportalPanel(panel);
+    });
+
     if (!row) {
-      clearAllPanels();
+      rowResizeObserver.disconnect();
+      observedRow = null;
       return;
     }
-    const panel = row.querySelector(":scope > .task-row-actions");
-    if (!panel) return;
-    const rect = row.getBoundingClientRect();
-    panel.style.left = `${rect.left}px`;
-    panel.style.width = `${rect.width}px`;
-    // Completed rows live at the bottom of the tasks field — drop the popover
-    // above the row instead of below so it doesn't fall off the screen.
-    if (row.classList.contains("completed")) {
-      const panelHeight = panel.getBoundingClientRect().height;
-      panel.style.top = `${rect.top - panelHeight - 6}px`;
-    } else {
-      panel.style.top = `${rect.bottom + 6}px`;
+
+    if (observedRow !== row) {
+      rowResizeObserver.disconnect();
+      rowResizeObserver.observe(row);
+      observedRow = row;
     }
+
+    const panel = getActionsPanel(row);
+    if (!panel) return;
+
+    portalPanel(panel, row);
+    positionPanel(panel, row);
   }
 
   let rafId = null;
@@ -4390,17 +4495,17 @@ window.addEventListener("load", () => {
 
   document.addEventListener("focusin", scheduleUpdate);
   document.addEventListener("focusout", () => setTimeout(scheduleUpdate, 0));
+  document.addEventListener("input", (e) => {
+    if (e.target?.classList?.contains("task-text")) scheduleUpdate();
+  });
   window.addEventListener("resize", scheduleUpdate);
-  window.addEventListener("scroll", scheduleUpdate, true);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", scheduleUpdate);
-    window.visualViewport.addEventListener("scroll", scheduleUpdate);
   }
-  if (MOBILE_MEDIA && MOBILE_MEDIA.addEventListener) {
+  if (MOBILE_MEDIA?.addEventListener) {
     MOBILE_MEDIA.addEventListener("change", scheduleUpdate);
   }
 
-  // Catch class-driven state changes (color picker open, reorder active).
   const classObserver = new MutationObserver(scheduleUpdate);
   classObserver.observe(document.body, {
     subtree: true,
