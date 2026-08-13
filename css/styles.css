@@ -2301,7 +2301,7 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
 }
 
 .day-rect.is-today .day-label {
-  opacity: 0.7;
+  opacity: 0.9;
 }
 
 .day-tasks {
