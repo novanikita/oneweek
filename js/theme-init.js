@@ -87,6 +87,54 @@
     );
   }
 
+  function hexToRgb(hex) {
+    const n = normalizeHexColor(hex);
+    if (!n) return null;
+    return {
+      r: parseInt(n.slice(1, 3), 16),
+      g: parseInt(n.slice(3, 5), 16),
+      b: parseInt(n.slice(5, 7), 16),
+    };
+  }
+
+  function relativeLuminance(hex) {
+    const rgb = hexToRgb(hex);
+    if (!rgb) return 1;
+    const lin = (channel) => {
+      const s = channel / 255;
+      return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * lin(rgb.r) + 0.7152 * lin(rgb.g) + 0.0722 * lin(rgb.b);
+  }
+
+  function resolveBackgroundHex(bgHex) {
+    const fromArg = normalizeHexColor(bgHex);
+    if (fromArg) return fromArg;
+    const inline = rootBackgroundFromDocument();
+    if (inline) return inline;
+    return DEFAULT_BG;
+  }
+
+  function rootBackgroundFromDocument() {
+    const inline = document.documentElement.style
+      .getPropertyValue("--color-background")
+      .trim();
+    const n0 = normalizeHexColor(inline);
+    if (n0) return n0;
+    if (typeof getComputedStyle !== "function") return "";
+    const computed = getComputedStyle(document.documentElement)
+      .getPropertyValue("--color-background")
+      .trim();
+    return normalizeHexColor(computed);
+  }
+
+  function syncTaskHighlightScheme(bgHex) {
+    const scheme = relativeLuminance(resolveBackgroundHex(bgHex)) < 0.45
+      ? "dark"
+      : "light";
+    document.documentElement.dataset.taskHighlights = scheme;
+  }
+
   function applyThemeToDocument(textHex, bgHex, fontId) {
     const root = document.documentElement;
     if (textHex) root.style.setProperty("--color-text", textHex);
@@ -94,6 +142,13 @@
     if (bgHex) root.style.setProperty("--color-background", bgHex);
     else root.style.removeProperty("--color-background");
     if (fontId !== undefined) applyFontById(fontId);
+    syncTaskHighlightScheme(bgHex);
+    const themeColor = normalizeHexColor(bgHex) || resolveBackgroundHex(bgHex);
+    if (themeColor) {
+      document.querySelectorAll('meta[name="theme-color"]').forEach((el) => {
+        el.setAttribute("content", themeColor);
+      });
+    }
   }
 
   const PRESETS = {
@@ -349,5 +404,6 @@
     initThemeFromStorage,
     persistTheme,
     getCurrentHexForInput,
+    syncTaskHighlightScheme,
   };
 })();

@@ -100,11 +100,9 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * Undo stack (Ctrl/Cmd+Z). Each panel (general, daily-per-day) registers a
- * restore handler keyed by its block id; deletion handlers push an entry onto
- * the shared stack, and the global keydown listener pops + dispatches to the
- * right block. Only the action of "task deleted via trash button" is currently
- * undoable — text edits are handled by the browser's native textarea undo.
+ * Undo stack (Ctrl/Cmd+Z). Each panel registers a restore handler; only trash
+ * deletes are undoable — not checkbox toggles, drag moves, or text edits
+ * (textarea keeps the browser's native undo).
  */
 const oneweekUndoStack = [];
 const oneweekUndoHandlers = new Map();
@@ -191,9 +189,60 @@ function isOnline() {
   return typeof navigator === "undefined" || navigator.onLine !== false;
 }
 
+const UI_LANG_STORAGE_KEY = "oneweek-about-lang";
+
+const CONNECTION_BANNER_STRINGS = {
+  en: "No connection right now, but your tasks are still saved locally.",
+  ru: "Пока нет связи, но задачи всё равно сохраняются.",
+};
+
+function getUiLang() {
+  try {
+    return localStorage.getItem(UI_LANG_STORAGE_KEY) === "ru" ? "ru" : "en";
+  } catch {
+    return "en";
+  }
+}
+
+function undoKeyboardHint() {
+  if (typeof navigator === "undefined") return "Ctrl+Z";
+  const platform = navigator.platform || "";
+  return /Mac|iPhone|iPad|iPod/.test(platform) ? "⌘Z" : "Ctrl+Z";
+}
+
+function wireTaskDeleteButton(deleteBtn) {
+  const hint = undoKeyboardHint();
+  deleteBtn.setAttribute("aria-label", `Delete task. Undo with ${hint}.`);
+  deleteBtn.title = `Delete (${hint} to undo)`;
+}
+
+let undoHintTimer = null;
+
+function showUndoDeleteHint() {
+  const el = document.getElementById("undo-hint");
+  if (!el) return;
+  const lang = getUiLang();
+  el.textContent =
+    lang === "ru"
+      ? `Удалено. ${undoKeyboardHint()} — отменить.`
+      : `Deleted. Press ${undoKeyboardHint()} to undo.`;
+  el.hidden = false;
+  if (undoHintTimer) clearTimeout(undoHintTimer);
+  undoHintTimer = setTimeout(() => {
+    el.hidden = true;
+    undoHintTimer = null;
+  }, 3200);
+}
+
 function updateConnectionBanner() {
   const banner = document.getElementById("connection-banner");
   if (!banner) return;
+  const textEl = banner.querySelector(".connection-banner-text");
+  if (textEl) {
+    const lang = getUiLang();
+    textEl.textContent =
+      CONNECTION_BANNER_STRINGS[lang] || CONNECTION_BANNER_STRINGS.en;
+  }
   const offline = !isOnline() || oneweekNet.hasNetFailure;
   banner.hidden = !offline;
 }
@@ -279,6 +328,9 @@ function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist
       checked: !!task.checked,
       subtask: !!task.subtask,
       color: normalizeTaskColor(task.color),
+      // Frozen at queue time so a workspace switch mid-persist cannot insert
+      // into the wrong bucket.
+      workspaceId: getActiveWorkspaceId() ?? null,
     };
     let writeFailed = false;
     const next = (tail ?? Promise.resolve())
@@ -339,6 +391,10 @@ function autoSizeTextarea(el) {
   const row = el.closest(".task-row");
   const wasMultiline = row?.classList.contains("task-row-multiline");
 
+  // Clear any CSS max-height while measuring so wrapped text can report a
+  // real scrollHeight (mobile single-line rows use max-height: var(--task-line)).
+  const prevMaxHeight = el.style.maxHeight;
+  el.style.maxHeight = "none";
   el.style.height = "0";
   syncTaskRowMultiline(el);
 
@@ -349,7 +405,7 @@ function autoSizeTextarea(el) {
   const oneLineHeight = getTaskInputOneLineHeight(el);
   const isMultiline = row?.classList.contains("task-row-multiline");
   let safeHeight = isMultiline
-    ? Math.max(el.scrollHeight, oneLineHeight)
+    ? Math.max(el.scrollHeight, oneLineHeight) + 2
     : oneLineHeight;
   el.style.height = `${safeHeight}px`;
 
@@ -358,10 +414,11 @@ function autoSizeTextarea(el) {
   if (wasMultiline !== isMultiline) {
     el.style.height = "0";
     safeHeight = isMultiline
-      ? Math.max(el.scrollHeight, oneLineHeight)
+      ? Math.max(el.scrollHeight, oneLineHeight) + 2
       : oneLineHeight;
     el.style.height = `${safeHeight}px`;
   }
+  el.style.maxHeight = prevMaxHeight;
 }
 
 const taskSaveFlushes = [];
@@ -408,7 +465,11 @@ function dailyTasksCacheKey(userId, dayName, date, workspaceId) {
 
 function getActiveWorkspaceId() {
   try {
-    return window.oneweekWorkspaces?.getActiveId?.() || null;
+    const ws = window.oneweekWorkspaces;
+    if (!ws) return null;
+    // Fail closed: never treat an id as active until the module finished loading.
+    if (typeof ws.isReady === "function" && !ws.isReady()) return null;
+    return ws.getActiveId?.() || null;
   } catch {
     return null;
   }
@@ -433,6 +494,92 @@ async function awaitWorkspaceReady(userId) {
     }
   }
 }
+
+/**
+ * Single auth subscription for the app. Workspaces load first, then panel
+ * listeners run — avoids each panel calling getSession + onAuthStateChange.
+ */
+const ONEWEEK_AUTH_CHANGE = "oneweek-auth-change";
+
+(function setupOneweekAuthHub() {
+  if (typeof window === "undefined" || window.oneweekAuth) return;
+  const supabase = window.supabaseClient;
+  if (!supabase) return;
+
+  let session = null;
+  let initialized = false;
+  const listeners = new Set();
+  let chain = Promise.resolve();
+
+  async function publish(nextSession) {
+    session = nextSession ?? null;
+    const userId = session?.user?.id || null;
+    const ws = window.oneweekWorkspaces;
+    if (ws && typeof ws.applyAuthSession === "function") {
+      try {
+        await ws.applyAuthSession(session);
+      } catch (err) {
+        console.error("Workspace auth apply failed:", err);
+      }
+    } else if (userId) {
+      await awaitWorkspaceReady(userId);
+    }
+    for (const fn of [...listeners]) {
+      try {
+        await fn(session);
+      } catch (err) {
+        console.error("Auth listener failed:", err);
+      }
+    }
+    window.dispatchEvent(
+      new CustomEvent(ONEWEEK_AUTH_CHANGE, { detail: { session } })
+    );
+  }
+
+  function enqueue(nextSession) {
+    chain = chain.then(() => publish(nextSession)).catch((err) => {
+      console.error("Auth hub publish failed:", err);
+    });
+    return chain;
+  }
+
+  window.oneweekAuth = {
+    getSession: () => session,
+    isReady: () => initialized,
+    whenReady: () => readyPromise,
+    subscribe(fn) {
+      listeners.add(fn);
+      if (initialized) void fn(session);
+      return () => listeners.delete(fn);
+    },
+  };
+
+  // Subscribe before async init so sign-in/out during startup is not missed.
+  let authEventsSeen = 0;
+  supabase.auth.onAuthStateChange((_event, nextSession) => {
+    authEventsSeen += 1;
+    void enqueue(nextSession);
+  });
+
+  const readyPromise = (async () => {
+    try {
+      if (typeof window.oneweekWorkspaces?.init === "function") {
+        await window.oneweekWorkspaces.init({ supabase });
+      }
+      const { data } = await supabase.auth.getSession();
+      if (authEventsSeen === 0) {
+        await enqueue(data?.session ?? null);
+      }
+    } catch (err) {
+      console.error("Auth hub init failed:", err);
+      if (authEventsSeen === 0) {
+        await enqueue(null);
+      }
+    } finally {
+      initialized = true;
+    }
+  })();
+})();
 
 function readTasksCache(key) {
   try {
@@ -460,39 +607,103 @@ function taskIndexInList(tasks, task) {
 /** Push 0..n-1 positions for persisted rows (after drag, toggle, paste, etc.). */
 async function persistTaskPositions(supabase, userId, tasks) {
   if (!supabase || !userId || !tasks?.length) return;
-  syncPositionsFromArray(tasks);
-  const updates = tasks
-    .map((t, position) => ({ dbId: t.dbId, position }))
-    .filter((u) => u.dbId != null);
+
+  const updates = [];
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    if (t.dbId == null) continue;
+    updates.push({
+      dbId: t.dbId,
+      newPosition: i,
+      oldPosition: typeof t.position === "number" ? t.position : i,
+    });
+  }
   if (updates.length === 0) return;
 
-  const results = await Promise.all(
-    updates.map(({ dbId, position }) =>
-      supabase
-        .from("tasks")
-        .update({ position })
-        .eq("id", dbId)
-        .eq("user_id", userId)
-    )
-  );
-  const error = results.find((r) => r.error)?.error;
-  if (error) {
-    markNetworkFailure(error);
-    throw error;
+  syncPositionsFromArray(tasks);
+
+  async function applyPositions(rows) {
+    const results = await Promise.all(
+      rows.map(({ dbId, newPosition }) =>
+        supabase
+          .from("tasks")
+          .update({ position: newPosition })
+          .eq("id", dbId)
+          .eq("user_id", userId)
+      )
+    );
+    const failed = [];
+    results.forEach((result, i) => {
+      if (result.error) failed.push({ ...rows[i], error: result.error });
+    });
+    return failed;
+  }
+
+  let pending = updates.map(({ dbId, newPosition }) => ({ dbId, newPosition }));
+  let failed = await applyPositions(pending);
+  if (failed.length > 0) {
+    pending = failed.map(({ dbId, newPosition }) => ({ dbId, newPosition }));
+    failed = await applyPositions(pending);
+  }
+
+  if (failed.length > 0) {
+    markNetworkFailure(failed[0].error);
+    const failedIds = new Set(failed.map((f) => f.dbId));
+    const toRevert = updates.filter((u) => !failedIds.has(u.dbId));
+    if (toRevert.length > 0) {
+      await Promise.allSettled(
+        toRevert.map(({ dbId, oldPosition }) =>
+          supabase
+            .from("tasks")
+            .update({ position: oldPosition })
+            .eq("id", dbId)
+            .eq("user_id", userId)
+        )
+      );
+    }
+    for (const t of tasks) {
+      if (t.dbId) t._positionDirty = true;
+    }
+    throw failed[0].error;
+  }
+
+  for (const t of tasks) {
+    if (t.dbId) t._positionDirty = false;
   }
   markNetworkSuccess();
 }
 
 function createPositionPersistScheduler(supabase, getUserId, getTasks) {
   let chain = Promise.resolve();
+  let retryQueued = false;
+
+  function runPersist() {
+    const userId = getUserId();
+    const tasks = getTasks();
+    if (!supabase || !userId || !tasks?.length) return Promise.resolve();
+    return persistTaskPositions(supabase, userId, tasks);
+  }
+
   return function schedulePersistTaskPositions() {
     const userId = getUserId();
     const tasks = getTasks();
     if (!supabase || !userId || !tasks?.length) return;
+
     chain = chain
-      .then(() => persistTaskPositions(supabase, userId, tasks))
+      .then(() => runPersist())
       .catch((err) => {
         console.error("Supabase position persist failed:", err);
+        if (!retryQueued && tasks.some((t) => t._positionDirty)) {
+          retryQueued = true;
+          chain = chain
+            .then(() => runPersist())
+            .catch((retryErr) => {
+              console.error("Supabase position persist retry failed:", retryErr);
+            })
+            .finally(() => {
+              retryQueued = false;
+            });
+        }
       });
   };
 }
@@ -518,11 +729,91 @@ function writeTasksCache(key, tasks) {
   }
 }
 
+/** Remove plaintext task caches (privacy: shared devices / after logout). */
+function clearAllTasksCaches() {
+  try {
+    const toRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        (k.startsWith("oneweek-cache-general-") ||
+          k.startsWith("oneweek-cache-daily-"))
+      ) {
+        toRemove.push(k);
+      }
+    }
+    for (const k of toRemove) localStorage.removeItem(k);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 if (typeof window !== "undefined") {
   window.__flushAllTaskSaves = flushAllTaskSaves;
 }
 
-/** Full cross-panel payload on dataTransfer (global store can be cleared in dragend before drop in some browsers). */
+/** Pointer coords packaged like a drop/dragover event (touch cross-panel). */
+function syntheticPointerEvent(clientX, clientY) {
+  const target = document.elementFromPoint(clientX, clientY) || document.body;
+  return {
+    clientX,
+    clientY,
+    target,
+    preventDefault() {},
+    stopPropagation() {},
+    stopImmediatePropagation() {},
+  };
+}
+
+function findTaskPanelAtPoint(clientX, clientY) {
+  const hit = document.elementFromPoint(clientX, clientY);
+  if (!hit) return null;
+
+  const tasksField = document.getElementById("tasks-field");
+  const tasksFieldRoot = document.getElementById("tasks-field-root");
+  if (tasksField?.contains(hit) || tasksFieldRoot?.contains(hit)) {
+    return {
+      blockId: "general",
+      listEl: tasksFieldRoot?.querySelector(".tasks-list"),
+      anchorEl: tasksField,
+    };
+  }
+
+  const dayTasks = hit.closest(".day-tasks");
+  if (dayTasks) {
+    const dayRect = dayTasks.closest(".day-rect");
+    const dayName = dayRect?.dataset?.day;
+    if (!dayName) return null;
+    return {
+      blockId: `day:${dayName}`,
+      listEl: dayTasks.querySelector(".tasks-list"),
+      anchorEl: dayTasks,
+    };
+  }
+  return null;
+}
+
+/** Route a touch drop to another task panel (general ↔ daily). */
+function tryTouchCrossPanelDrop(clientX, clientY, sourceBlock) {
+  const payload = window.__dragTaskPayload;
+  if (!payload?.sourceBlock || payload.sourceBlock !== sourceBlock) return false;
+  const target = findTaskPanelAtPoint(clientX, clientY);
+  if (!target || target.blockId === sourceBlock) return false;
+  hideAllTaskDropIndicators();
+  window.dispatchEvent(
+    new CustomEvent("task-touch-cross-drop", {
+      detail: {
+        clientX,
+        clientY,
+        payload,
+        targetBlock: target.blockId,
+      },
+    })
+  );
+  return true;
+}
+
 const ONEWEEK_DRAG_PAYLOAD_MIME = "application/x-oneweek-task-payload";
 
 function readDragPayloadFromEvent(e) {
@@ -590,16 +881,26 @@ function normalizeTaskColor(color) {
   return TASK_COLOR_PALETTE.includes(c) ? c : null;
 }
 
+/** Highlight CSS var with concrete hex fallback if the palette token is missing. */
+function taskHighlightCssVar(color) {
+  const c = normalizeTaskColor(color);
+  if (!c) return "";
+  const token = c.slice(1);
+  return `var(--task-hl-${token}, ${c})`;
+}
+
 /** Apply / clear the highlight color on a task row element. */
 function applyTaskRowColor(row, color) {
   if (!row) return;
   const c = normalizeTaskColor(color);
   if (c) {
-    row.style.background = c;
     row.dataset.color = c;
-  } else {
+    row.style.setProperty("--task-hl", taskHighlightCssVar(c));
     row.style.background = "";
+  } else {
     delete row.dataset.color;
+    row.style.removeProperty("--task-hl");
+    row.style.background = "";
   }
 }
 
@@ -660,7 +961,7 @@ function syncTaskColorButton(btn, color) {
   if (!dot) return;
   const c = normalizeTaskColor(color);
   if (c) {
-    dot.style.background = c;
+    dot.style.background = taskHighlightCssVar(c);
     dot.dataset.filled = "1";
   } else {
     dot.style.background = "";
@@ -718,58 +1019,83 @@ function closeTaskColorPicker(restoreFocus = false) {
   }
 }
 
+function syncTaskCheckboxA11y(checkbox, checked) {
+  if (!checkbox) return;
+  checkbox.setAttribute("role", "checkbox");
+  checkbox.setAttribute("aria-checked", checked ? "true" : "false");
+  checkbox.setAttribute(
+    "aria-label",
+    checked ? "Mark task incomplete" : "Mark task complete"
+  );
+}
+
+function wireTaskColorSwatch(btn, onPick) {
+  const pick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onPick();
+    closeTaskColorPicker(true);
+  };
+  btn.addEventListener("mousedown", pick);
+  btn.addEventListener("click", pick);
+}
+
 function openTaskColorPicker(anchor, currentColor, onSelect, restoreFocusInput, rowEl) {
   closeTaskColorPicker(false);
   if (!anchor) return;
 
   const pop = document.createElement("div");
   pop.className = "task-color-popover";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-modal", "true");
+  pop.setAttribute("aria-label", "Task color");
 
   const grid = document.createElement("div");
   grid.className = "task-color-grid";
+  grid.setAttribute("role", "listbox");
+  grid.setAttribute("aria-label", "Task colors");
 
   const current = normalizeTaskColor(currentColor);
+  const swatches = [];
 
   const noneBtn = document.createElement("button");
   noneBtn.type = "button";
   noneBtn.className = "task-color-swatch task-color-swatch-none";
+  noneBtn.setAttribute("role", "option");
   noneBtn.setAttribute("aria-label", "No color");
+  noneBtn.setAttribute("aria-selected", !current ? "true" : "false");
   if (!current) noneBtn.classList.add("task-color-swatch-active");
-  noneBtn.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onSelect(null);
-    closeTaskColorPicker(true);
-  });
+  wireTaskColorSwatch(noneBtn, () => onSelect(null));
   grid.appendChild(noneBtn);
+  swatches.push(noneBtn);
 
   for (const color of TASK_COLOR_PALETTE) {
     const s = document.createElement("button");
     s.type = "button";
     s.className = "task-color-swatch";
-    s.style.background = color;
+    s.style.background = taskHighlightCssVar(color);
+    s.setAttribute("role", "option");
     s.setAttribute("aria-label", `Color ${color}`);
+    s.setAttribute("aria-selected", current === color ? "true" : "false");
     if (current === color) s.classList.add("task-color-swatch-active");
-    s.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      onSelect(color);
-      closeTaskColorPicker(true);
-    });
+    wireTaskColorSwatch(s, () => onSelect(color));
     grid.appendChild(s);
+    swatches.push(s);
   }
 
   pop.appendChild(grid);
   document.body.appendChild(pop);
+
+  function focusSwatch(index) {
+    const i = ((index % swatches.length) + swatches.length) % swatches.length;
+    swatches[i]?.focus({ preventScroll: true });
+  }
 
   function position() {
     const rect = anchor.getBoundingClientRect();
     const popRect = pop.getBoundingClientRect();
     const margin = 8;
     let top = rect.bottom + 6;
-    // Center horizontally under the row (so the picker lines up with the
-    // actions popover, which is itself centered under the row). Fall back to
-    // centering under the anchor button if the row isn't known.
     const centerEl = rowEl || anchor;
     const centerRect = centerEl.getBoundingClientRect();
     let left = centerRect.left + centerRect.width / 2 - popRect.width / 2;
@@ -790,7 +1116,29 @@ function openTaskColorPicker(anchor, currentColor, onSelect, restoreFocusInput, 
     closeTaskColorPicker(true);
   };
   const onKey = (e) => {
-    if (e.key === "Escape") closeTaskColorPicker(true);
+    if (e.key === "Escape") {
+      closeTaskColorPicker(true);
+      return;
+    }
+    if (!pop.contains(e.target)) return;
+    const idx = swatches.indexOf(document.activeElement);
+    if (idx === -1) return;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      e.preventDefault();
+      focusSwatch(idx + 1);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      e.preventDefault();
+      focusSwatch(idx - 1);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      focusSwatch(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      focusSwatch(swatches.length - 1);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      document.activeElement?.click();
+    }
   };
   const onScroll = () => position();
 
@@ -801,12 +1149,10 @@ function openTaskColorPicker(anchor, currentColor, onSelect, restoreFocusInput, 
 
   activeColorPicker = { el: pop, onOutside, onKey, onScroll, restoreFocusInput, rowEl };
 
-  if (restoreFocusInput?.isConnected) {
-    restoreFocusInput.focus({ preventScroll: true });
-  }
+  requestAnimationFrame(() => focusSwatch(0));
 }
 
-function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd) {
+function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd, touchReorder) {
   dragHandle.draggable = false;
   if (!isAuthed) {
     row.draggable = false;
@@ -818,6 +1164,9 @@ function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd) {
   let reorderFromHandle = false;
   let dragImageOffsetX = 0;
   let dragImageOffsetY = 0;
+  let touchPointerId = null;
+  let touchTracking = false;
+  let touchArmed = false;
 
   const beginDragInteraction = () => {
     const input = row.querySelector(".task-text");
@@ -846,7 +1195,7 @@ function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd) {
       window.removeEventListener("mouseup", onPointerUp);
       window.removeEventListener("pointerup", onPointerUp);
       requestAnimationFrame(() => {
-        if (!row.classList.contains("task-row-dragging")) {
+        if (!row.classList.contains("task-row-dragging") && !touchTracking) {
           endDragInteraction();
         }
       });
@@ -856,6 +1205,8 @@ function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd) {
   };
 
   const onHandlePointerDown = (e) => {
+    // Touch/pen use the pointer path below — avoid double-arming HTML5 drag.
+    if (e.pointerType && e.pointerType !== "mouse") return;
     reorderFromHandle = true;
     const rect = row.getBoundingClientRect();
     dragImageOffsetX = e.clientX - rect.left;
@@ -894,6 +1245,85 @@ function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd) {
     hideAllTaskDropIndicators();
     onDragEnd();
   });
+
+  // iOS / touch: HTML5 DnD from a handle is unreliable. Drive same-list reorder
+  // with Pointer Events; desktop mouse keeps the path above.
+  if (touchReorder && typeof touchReorder.commit === "function") {
+    const finishTouch = (e, committed) => {
+      if (!touchArmed && !touchTracking) return;
+      if (touchPointerId != null && e.pointerId !== touchPointerId) return;
+      try {
+        dragHandle.releasePointerCapture?.(touchPointerId);
+      } catch {
+        /* already released */
+      }
+      const wasTracking = touchTracking;
+      touchArmed = false;
+      touchTracking = false;
+      touchPointerId = null;
+      // Commit while .task-row-dragging is still on — keeps the portaled
+      // mobile actions panel hidden so elementFromPoint hits the list.
+      if (wasTracking && committed) {
+        touchReorder.commit(e.clientX, e.clientY);
+      }
+      row.classList.remove("task-row-dragging");
+      hideAllTaskDropIndicators();
+      onDragEnd();
+      endDragInteraction();
+    };
+
+    dragHandle.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (!isAuthed) return;
+        if (e.pointerType === "mouse") return;
+        if (e.button != null && e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        touchPointerId = e.pointerId;
+        touchArmed = true;
+        touchTracking = false;
+        beginDragInteraction();
+        try {
+          dragHandle.setPointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+        // Seed drag state (payload / draggedId) without a real dataTransfer.
+        const fakeDt = {
+          effectAllowed: "move",
+          setData() {},
+          setDragImage() {},
+        };
+        onDragStart({ dataTransfer: fakeDt, preventDefault() {}, clientX: e.clientX, clientY: e.clientY });
+      },
+      true
+    );
+
+    dragHandle.addEventListener("pointermove", (e) => {
+      if (!touchArmed || e.pointerId !== touchPointerId) return;
+      if (!touchTracking) {
+        touchTracking = true;
+        row.classList.add("task-row-dragging");
+      }
+      const listEl = touchReorder.getListEl?.();
+      const indicator = touchReorder.getIndicator?.();
+      const anchor = touchReorder.getAnchorEl?.();
+      if (listEl && indicator && anchor) {
+        updateTaskDropIndicator(
+          anchor,
+          indicator,
+          listEl,
+          e,
+          touchReorder.getDraggedId?.() ?? row.dataset.id,
+          touchReorder.getTaskIndex
+        );
+      }
+    });
+
+    dragHandle.addEventListener("pointerup", (e) => finishTouch(e, true));
+    dragHandle.addEventListener("pointercancel", (e) => finishTouch(e, false));
+  }
 }
 
 function taskRowInsertBefore(e, row) {
@@ -914,6 +1344,26 @@ function reorderTaskInArray(tasks, fromIndex, targetIndex, insertBefore) {
   const [moved] = tasks.splice(fromIndex, 1);
   tasks.splice(insertAt, 0, moved);
   return moved;
+}
+
+/**
+ * Same-list drop when the pointer is not on another row (empty padding, spacer,
+ * area below the last task). Moves the dragged row to the end of the array —
+ * matches the drop indicator's showAtEnd(). Returns the moved task or null.
+ */
+function reorderTaskToListEnd(tasks, fromIndex) {
+  if (fromIndex < 0 || fromIndex >= tasks.length - 1) return null;
+  const [moved] = tasks.splice(fromIndex, 1);
+  tasks.push(moved);
+  return moved;
+}
+
+/**
+ * Resolve a same-list reorder from a drop event. Prefer the row under the
+ * cursor; if the drop landed in empty space, append to the end of the list.
+ */
+function reorderTaskFromSameListDrop(tasks, fromId, e, listEl, getTaskIndex) {
+  return reorderSubtreeFromSameListDrop(tasks, fromId, e, listEl, getTaskIndex);
 }
 
 function dataTransferHasType(dt, mime) {
@@ -975,7 +1425,7 @@ function createTaskDropIndicator(anchorEl, scrollEl = anchorEl) {
       }
     },
     hide() {
-      indicator.hidden = true;
+      ensureIndicator().hidden = true;
     },
   };
 }
@@ -1052,17 +1502,20 @@ function computeCrossInsertIndex(tasks, getTaskIndex, e, listEl, payloadChecked)
  * Place the drop indicator at the would-be insert position for a cross-block
  * drag. `insertAt === tasks.length` means "after the very last row".
  */
-function showCrossDropIndicator(indicator, listEl, insertAt) {
+function showCrossDropIndicator(indicator, listEl, insertAt, tasks) {
   if (!listEl) {
     indicator.hide();
     return;
   }
   const rows = listEl.querySelectorAll(".task-row:not(.task-row-dragging)");
-  if (insertAt >= rows.length) {
+  const visibleIdx = tasks
+    ? visibleRowIndexForFlatInsert(tasks, insertAt)
+    : insertAt;
+  if (visibleIdx >= rows.length) {
     indicator.showAtEnd(listEl);
     return;
   }
-  indicator.showBeforeRow(rows[Math.max(0, insertAt)]);
+  indicator.showBeforeRow(rows[Math.max(0, visibleIdx)]);
 }
 
 /**
@@ -1095,6 +1548,7 @@ async function supabaseRelocateTaskRow(supabase, userId, rowId, fields) {
 }
 
 function normalizeSubtaskFlags(tasks) {
+  const changed = [];
   for (let i = 0; i < tasks.length; i++) {
     if (!tasks[i].subtask) continue;
     let ok = false;
@@ -1104,18 +1558,236 @@ function normalizeSubtaskFlags(tasks) {
         break;
       }
     }
-    if (!ok) tasks[i].subtask = false;
+    if (!ok) {
+      tasks[i].subtask = false;
+      changed.push(tasks[i]);
+    }
+  }
+  return changed;
+}
+
+function persistSubtaskNormalizationFixes(changed, { markTaskDirty, persistTask } = {}) {
+  if (!changed?.length || !markTaskDirty || !persistTask) return;
+  for (const t of changed) {
+    if (!t?.dbId || isTaskEmptyText(t.text)) continue;
+    markTaskDirty(t);
+    void persistTask(t);
   }
 }
 
 function canIndentAsSubtask(tasks, idx) {
   if (idx <= 0) return false;
   normalizeSubtaskFlags(tasks);
-  return true;
+  const task = tasks[idx];
+  if (task.subtask) return false;
+  if (mainTaskHasSubtasks(tasks, idx)) return false;
+  return !tasks[idx - 1].subtask;
+}
+
+/** True when local state has unsynced edits that must preserve client-side order. */
+function mergeNeedsLocalOrderPreservation(localBefore) {
+  if (!localBefore?.length) return false;
+  return localBefore.some(
+    (t) => t._dirty || (t.dbId == null && !isTaskEmptyText(t.text))
+  );
+}
+
+function defaultTaskMergeContentKey(t) {
+  const color = normalizeTaskColor(t.color) || "";
+  return `${String(t.text ?? "").trim()}|${t.checked ? 1 : 0}|${t.subtask ? 1 : 0}|${color}`;
+}
+
+/**
+ * Combine a server snapshot (ordered by `position`) with unsynced local edits.
+ * When nothing is dirty, trust the server order — `position` is authoritative.
+ */
+function mergeLocalEditsIntoServerSnapshot(
+  serverTasks,
+  localBefore,
+  { contentKeyFn = defaultTaskMergeContentKey } = {}
+) {
+  if (!mergeNeedsLocalOrderPreservation(localBefore)) {
+    return serverTasks.map((srv) => ({ ...srv }));
+  }
+
+  const contentKey = contentKeyFn;
+  const serverByDbId = new Map();
+  for (const s of serverTasks) {
+    if (s.dbId) serverByDbId.set(s.dbId, s);
+  }
+
+  const usedDbIds = new Set();
+  const result = [];
+
+  const unusedServerByContent = new Map();
+  for (const srv of serverTasks) {
+    if (!srv.dbId) continue;
+    const k = contentKey(srv);
+    if (!unusedServerByContent.has(k)) unusedServerByContent.set(k, []);
+    unusedServerByContent.get(k).push(srv);
+  }
+
+  for (const local of localBefore) {
+    if (local.dbId) {
+      const srv = serverByDbId.get(local.dbId);
+      if (!srv) {
+        if (local._dirty && !isTaskEmptyText(local.text)) {
+          result.push({ ...local, dbId: null });
+          const bucket = unusedServerByContent.get(contentKey(local));
+          // Unique content match only — avoid attaching a twin's dbId.
+          if (bucket && bucket.length === 1) bucket.shift();
+        }
+        continue;
+      }
+      usedDbIds.add(local.dbId);
+      const bucket = unusedServerByContent.get(contentKey(srv));
+      if (bucket) {
+        const idx = bucket.indexOf(srv);
+        if (idx !== -1) bucket.splice(idx, 1);
+      }
+      if (local._dirty) {
+        result.push({
+          ...srv,
+          id: local.id,
+          text: local.text,
+          checked: local.checked,
+          subtask: local.subtask,
+          color: normalizeTaskColor(local.color),
+          _dirty: true,
+        });
+      } else {
+        result.push({ ...srv, id: local.id });
+      }
+    } else if (!isTaskEmptyText(local.text)) {
+      const k = contentKey(local);
+      const bucket = unusedServerByContent.get(k);
+      // Prefer unique content matches. Ambiguous identical rows: FIFO only for
+      // dirty orphans (offline create retry), otherwise leave unmatched.
+      let match = null;
+      if (bucket && bucket.length === 1) {
+        match = bucket.shift();
+      } else if (bucket && bucket.length > 1 && local._dirty) {
+        match = bucket.shift();
+      }
+      if (match) {
+        usedDbIds.add(match.dbId);
+        result.push({ ...match, id: local.id });
+      } else if (local._dirty) {
+        result.push({
+          id: local.id,
+          dbId: null,
+          text: local.text,
+          checked: !!local.checked,
+          subtask: !!local.subtask,
+          color: normalizeTaskColor(local.color),
+          _dirty: true,
+        });
+      }
+    }
+  }
+
+  for (const srv of serverTasks) {
+    if (!srv.dbId || usedDbIds.has(srv.dbId)) continue;
+    result.push(srv);
+  }
+
+  return result;
 }
 
 function isTabNavigationKey(e) {
   return e.key === "Tab" || e.code === "Tab" || e.keyCode === 9;
+}
+
+/** Alt+Tab indents/outdents; plain Tab keeps native focus navigation. */
+function isTaskIndentKey(e) {
+  return isTabNavigationKey(e) && e.altKey && !e.metaKey && !e.ctrlKey;
+}
+
+function handleTaskTextTabIndent(e, ctx) {
+  const {
+    tasks,
+    taskId,
+    getTaskIndex,
+    persistTask,
+    markTaskDirty,
+    schedulePersistTaskPositions,
+    render,
+    isTaskEmptyText: isEmpty = isTaskEmptyText,
+  } = ctx;
+  if (!isTaskIndentKey(e)) return false;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const idx = getTaskIndex(taskId);
+  if (idx === -1) return true;
+  const task = tasks[idx];
+  const input = e.target;
+  if (e.shiftKey) {
+    if (task.subtask) {
+      outdentSubtask(tasks, idx);
+    } else {
+      task.subtask = false;
+    }
+  } else if (canIndentAsSubtask(tasks, idx)) {
+    task.subtask = true;
+    moveSubtaskUnderImmediateRowAbove(tasks, idx);
+  }
+  const fixed = normalizeSubtaskFlags(tasks);
+  persistSubtaskNormalizationFixes(fixed, ctx);
+  if (!isEmpty(task.text)) {
+    markTaskDirty(task);
+    void persistTask(task);
+  }
+  schedulePersistTaskPositions();
+  if (ctx.setFocusAfterRender) {
+    ctx.setFocusAfterRender({
+      id: task.id,
+      start: input.selectionStart,
+      end: input.selectionEnd,
+    });
+  }
+  render();
+  return true;
+}
+
+/**
+ * Map a flat-array insert index to a visible-row index (collapsed subtasks are
+ * skipped in the DOM but still occupy flat-array slots).
+ */
+function visibleRowIndexForFlatInsert(tasks, insertAt) {
+  if (!tasks?.length) return 0;
+  const clamped = Math.max(0, Math.min(insertAt, tasks.length));
+  let visibleBefore = 0;
+  for (let i = 0; i < clamped; i++) {
+    if (!isSubtaskRowHidden(tasks, i)) visibleBefore++;
+  }
+  if (clamped < tasks.length && isSubtaskRowHidden(tasks, clamped)) {
+    for (let i = clamped; i < tasks.length; i++) {
+      if (!isSubtaskRowHidden(tasks, i)) return visibleBefore;
+    }
+  }
+  return visibleBefore;
+}
+
+function focusTaskRowForEdit(row, preferTarget) {
+  if (!row) return;
+  if (preferTarget?.classList?.contains("task-text")) {
+    preferTarget.focus();
+    return;
+  }
+  const input = row.querySelector(".task-text");
+  if (input) input.focus();
+}
+
+function isTaskRowActionTarget(e) {
+  return (
+    e.target.classList?.contains("task-commit") ||
+    e.target.classList?.contains("task-delete") ||
+    !!e.target.closest?.(".task-color") ||
+    e.target.classList?.contains("task-drag-handle") ||
+    e.target.classList?.contains("task-drag-handle-icon") ||
+    !!e.target.closest?.(".task-drag-handle") ||
+    !!e.target.closest?.(".task-subtask-toggle-wrap")
+  );
 }
 
 /** First index after the run of subtasks that follow `mainIdx` (end of that subtree in flat list). */
@@ -1123,6 +1795,334 @@ function indexAfterSubtreeOfMain(tasks, mainIdx) {
   let pos = mainIdx + 1;
   while (pos < tasks.length && tasks[pos].subtask) pos++;
   return pos;
+}
+
+/** Span of a row plus its subtask run (single row when `idx` is a subtask). */
+function getTaskSubtreeSpan(tasks, idx) {
+  if (idx < 0 || idx >= tasks.length) return { start: idx, count: 0 };
+  if (tasks[idx].subtask) return { start: idx, count: 1 };
+  const end = indexAfterSubtreeOfMain(tasks, idx);
+  return { start: idx, count: end - idx };
+}
+
+function cloneTaskSnapshot(task) {
+  return {
+    text: task.text ?? "",
+    checked: !!task.checked,
+    subtask: !!task.subtask,
+    color: normalizeTaskColor(task.color),
+    dbId: task.dbId ?? null,
+  };
+}
+
+let pendingTaskDeleteChain = Promise.resolve();
+let moveRemainingGen = 0;
+
+function trackPendingTaskDeletes(promise) {
+  pendingTaskDeleteChain = pendingTaskDeleteChain
+    .then(() => promise)
+    .catch(() => {});
+}
+
+async function awaitPendingTaskDeletes() {
+  await pendingTaskDeleteChain;
+}
+
+async function taskRowExistsInDb(supabase, userId, dbId) {
+  if (!supabase || !userId || !dbId) return false;
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("id")
+    .eq("id", dbId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  return !error && !!data;
+}
+
+function carryForwardFingerprint(row) {
+  const content = String(row.content ?? row.text ?? "").trim();
+  const subtask = !!(row.is_subtask ?? row.subtask);
+  const color = normalizeTaskColor(row.color) || "";
+  return `${content}|${subtask ? 1 : 0}|${color}`;
+}
+
+/** Unchecked main groups from last week — keeps subtasks attached to their parent. */
+function expandCarryForwardGroups(rows) {
+  const tasks = rows.map((r, i) => ({
+    id: `carry-${i}`,
+    text: String(r.content ?? ""),
+    checked: !!(r.completed ?? r.checked ?? false),
+    subtask: !!r.is_subtask,
+    color: normalizeTaskColor(r.color),
+    dbId: null,
+  }));
+  normalizeSubtaskFlags(tasks);
+  const out = [];
+  for (const g of splitIntoTaskGroups(tasks)) {
+    if (g.main.checked) continue;
+    out.push({
+      content: g.main.text,
+      is_subtask: false,
+      color: g.main.color,
+    });
+    for (const s of g.subs) {
+      if (s.checked) continue;
+      out.push({
+        content: s.text,
+        is_subtask: true,
+        color: s.color,
+      });
+    }
+  }
+  return out;
+}
+
+/** Pair carry-forward payloads with server rows by content fingerprint. */
+function matchCarryForwardInsertRows(toCopy, serverRows) {
+  const pool = [...(serverRows ?? [])];
+  return toCopy.map((row) => {
+    const fp = carryForwardFingerprint(row);
+    const idx = pool.findIndex((r) => carryForwardFingerprint(r) === fp);
+    if (idx === -1) return null;
+    return pool.splice(idx, 1)[0];
+  });
+}
+
+function moveRemainingContextStillValid(moveGen, workspaceId, weekIso) {
+  return (
+    moveGen === moveRemainingGen &&
+    workspaceId === getActiveWorkspaceId() &&
+    weekIso === getVisibleWeekMondayIso()
+  );
+}
+
+function buildDragPayloadWithSubtree(tasks, idx, sourceBlock, sourceRelocate) {
+  const { start, count } = getTaskSubtreeSpan(tasks, idx);
+  const block = tasks.slice(start, start + count);
+  const main = block[0];
+  const subtree = block.map(cloneTaskSnapshot);
+  const payload = {
+    sourceBlock,
+    localId: main.id,
+    dbId: main.dbId ?? null,
+    text: main.text ?? "",
+    checked: !!main.checked,
+    subtask: !!main.subtask,
+    color: normalizeTaskColor(main.color),
+    subtree,
+  };
+  if (sourceRelocate) {
+    payload.sourceRelocate = {
+      type: sourceRelocate.type,
+      day_name: sourceRelocate.day_name ?? null,
+      date: sourceRelocate.date,
+      workspace_id: sourceRelocate.workspace_id ?? null,
+      rows: block.map((t, j) => ({
+        dbId: t.dbId ?? null,
+        content: String(t.text ?? ""),
+        completed: !!t.checked,
+        is_subtask: !!t.subtask,
+        color: normalizeTaskColor(t.color),
+        position: start + j,
+      })),
+    };
+  }
+  return payload;
+}
+
+/** Relocate cross-panel subtree rows; revert any successful writes on failure. */
+async function relocateCrossMoveSubtree(
+  supabase,
+  userId,
+  payload,
+  targetRelocate,
+  startPosition,
+  { normalizeContent } = {}
+) {
+  const rows = crossMovePayloadRows(payload);
+  const sourceRelocate = payload?.sourceRelocate;
+  const reverted = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row.dbId) continue;
+    const content = normalizeContent
+      ? normalizeContent(String(row.text ?? ""))
+      : String(row.text ?? "");
+    const { ok, error } = await supabaseRelocateTaskRow(supabase, userId, row.dbId, {
+      type: targetRelocate.type,
+      day_name: targetRelocate.day_name ?? null,
+      date: targetRelocate.date,
+      workspace_id: targetRelocate.workspace_id,
+      content,
+      completed: !!row.checked,
+      is_subtask: !!row.subtask,
+      color: normalizeTaskColor(row.color),
+      position: startPosition + i,
+    });
+    if (!ok) {
+      for (let j = reverted.length - 1; j >= 0; j--) {
+        const prev = reverted[j];
+        await supabaseRelocateTaskRow(supabase, userId, prev.dbId, prev.sourceFields);
+      }
+      return { ok: false, error };
+    }
+    if (sourceRelocate?.rows) {
+      const src =
+        sourceRelocate.rows.find((r) => r.dbId === row.dbId) ||
+        sourceRelocate.rows[i];
+      if (src?.dbId) {
+        reverted.push({
+          dbId: src.dbId,
+          sourceFields: {
+            type: sourceRelocate.type,
+            day_name: sourceRelocate.day_name ?? null,
+            date: sourceRelocate.date,
+            workspace_id: sourceRelocate.workspace_id,
+            content: src.content ?? String(row.text ?? ""),
+            completed: src.completed ?? !!row.checked,
+            is_subtask: src.is_subtask ?? !!row.subtask,
+            color: normalizeTaskColor(src.color ?? row.color),
+            position: src.position ?? startPosition + i,
+          },
+        });
+      }
+    }
+  }
+  return { ok: true, error: null };
+}
+
+function crossMoveGeneralContextValid(relocateTarget) {
+  return (
+    relocateTarget.date === getVisibleWeekMondayIso() &&
+    relocateTarget.workspace_id === getActiveWorkspaceId()
+  );
+}
+
+function crossMovePayloadRows(payload) {
+  if (Array.isArray(payload?.subtree) && payload.subtree.length > 0) {
+    return payload.subtree;
+  }
+  return [
+    {
+      dbId: payload?.dbId ?? null,
+      text: payload?.text ?? "",
+      checked: !!payload?.checked,
+      subtask: !!payload?.subtask,
+      color: normalizeTaskColor(payload?.color),
+    },
+  ];
+}
+
+function insertTasksFromCrossPayload(tasks, createTaskFn, payload, insertAt) {
+  const rows = crossMovePayloadRows(payload);
+  const safeAt = Math.max(0, Math.min(insertAt, tasks.length));
+  const inserted = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const t = createTaskFn(
+      r.text ?? "",
+      !!r.checked,
+      r.dbId || null,
+      !!r.subtask,
+      normalizeTaskColor(r.color)
+    );
+    tasks.splice(safeAt + i, 0, t);
+    inserted.push(t);
+  }
+  return inserted;
+}
+
+if (typeof window !== "undefined") {
+  window.__crossMoveBackups = window.__crossMoveBackups || new Map();
+}
+
+function storeCrossMoveSourceBackup(sourceLocalId, position, snapshots) {
+  if (typeof window === "undefined") return;
+  window.__crossMoveBackups.set(sourceLocalId, { position, snapshots });
+}
+
+function takeCrossMoveSourceBackup(sourceLocalId) {
+  if (typeof window === "undefined") return null;
+  const backup = window.__crossMoveBackups.get(sourceLocalId);
+  window.__crossMoveBackups.delete(sourceLocalId);
+  return backup || null;
+}
+
+function rollbackCrossMoveOnTarget(state, insertedLocalIds) {
+  for (let i = insertedLocalIds.length - 1; i >= 0; i--) {
+    const idx = state.tasks.findIndex((t) => t.id === insertedLocalIds[i]);
+    if (idx !== -1) state.tasks.splice(idx, 1);
+  }
+}
+
+function reorderSubtreeInArray(tasks, fromIndex, targetIndex, insertBefore) {
+  if (fromIndex < 0 || targetIndex < 0) return null;
+  const { start, count } = getTaskSubtreeSpan(tasks, fromIndex);
+  if (count <= 0) return null;
+  const subtreeEnd = start + count;
+  if (targetIndex >= start && targetIndex < subtreeEnd) return null;
+
+  let insertAt = insertBefore ? targetIndex : targetIndex + 1;
+  if (start < insertAt) insertAt -= count;
+  if (insertAt === start) return tasks[start];
+
+  const block = tasks.splice(start, count);
+  tasks.splice(insertAt, 0, ...block);
+  return block[0];
+}
+
+function reorderSubtreeToListEnd(tasks, fromIndex) {
+  const { start, count } = getTaskSubtreeSpan(tasks, fromIndex);
+  if (count <= 0 || start + count >= tasks.length) return null;
+  const block = tasks.splice(start, count);
+  tasks.push(...block);
+  return block[0];
+}
+
+function reorderSubtreeFromSameListDrop(tasks, fromId, e, listEl, getTaskIndex) {
+  const from = getTaskIndex(fromId);
+  if (from === -1) return null;
+
+  const row = e.target.closest?.(".task-row");
+  if (
+    row &&
+    listEl?.contains(row) &&
+    !row.classList.contains("task-row-dragging") &&
+    row.dataset.id &&
+    row.dataset.id !== fromId
+  ) {
+    const to = getTaskIndex(row.dataset.id);
+    if (to === -1) return null;
+    return reorderSubtreeInArray(tasks, from, to, taskRowInsertBefore(e, row));
+  }
+
+  return reorderSubtreeToListEnd(tasks, from);
+}
+
+/** Touch pointer drop: resolve target row under the finger (or end of list). */
+function reorderSubtreeFromTouchPoint(tasks, fromId, clientX, clientY, listEl, getTaskIndex) {
+  const from = getTaskIndex(fromId);
+  if (from === -1) return null;
+  const hit = document.elementFromPoint(clientX, clientY);
+  const row = hit?.closest?.(".task-row");
+  if (
+    row &&
+    listEl?.contains(row) &&
+    !row.classList.contains("task-row-dragging") &&
+    row.dataset.id &&
+    row.dataset.id !== fromId
+  ) {
+    const to = getTaskIndex(row.dataset.id);
+    if (to === -1) return null;
+    return reorderSubtreeInArray(
+      tasks,
+      from,
+      to,
+      taskRowInsertBefore({ clientY }, row)
+    );
+  }
+  return reorderSubtreeToListEnd(tasks, from);
 }
 
 /**
@@ -1151,8 +2151,45 @@ function moveSubtaskUnderImmediateRowAbove(tasks, fromIdx) {
   return adjustedInsert;
 }
 
+/** Outdent a subtask: promote to main and place after its parent's full subtree. */
+function outdentSubtask(tasks, idx) {
+  if (idx <= 0 || !tasks[idx]?.subtask) return idx;
+  let parentIdx = idx - 1;
+  while (parentIdx >= 0 && tasks[parentIdx].subtask) parentIdx -= 1;
+  const [row] = tasks.splice(idx, 1);
+  row.subtask = false;
+  if (parentIdx < 0) {
+    tasks.splice(idx, 0, row);
+    return idx;
+  }
+  const insertAt = indexAfterSubtreeOfMain(tasks, parentIdx);
+  tasks.splice(insertAt, 0, row);
+  return insertAt;
+}
+
+/**
+ * Boundary between the open stack and the completed-mains pile.
+ * Checked *subtasks* are ignored — they live inside open parents and must not
+ * act as the global "done" fence (Enter / paste / cross-drop / empty-click).
+ */
 function firstCheckedTaskIndex(tasks) {
-  return tasks.findIndex((t) => t.checked);
+  return tasks.findIndex((t) => t.checked && !t.subtask);
+}
+
+/**
+ * Where to splice a brand-new unchecked main task from an empty-area click:
+ * after every open (unchecked-main) group, before the first completed main.
+ */
+function insertIndexForNewOpenMain(tasks) {
+  const idx = firstCheckedTaskIndex(tasks);
+  return idx === -1 ? tasks.length : idx;
+}
+
+/** Re-apply open-above / done-below grouping in place (same-list drag, etc.). */
+function applyOpenDonePartition(tasks) {
+  const next = partitionUncheckedBeforeChecked(tasks);
+  tasks.length = 0;
+  for (const t of next) tasks.push(t);
 }
 
 /**
@@ -1200,24 +2237,135 @@ function partitionUncheckedBeforeChecked(tasks) {
 
 const collapsedSubtaskParents = new Set();
 
+function collapseKeyForTask(task) {
+  if (!task) return null;
+  if (task.dbId != null) return `db:${task.dbId}`;
+  return `local:${task.id}`;
+}
+
+function isTaskCollapsed(task) {
+  const key = collapseKeyForTask(task);
+  return key != null && collapsedSubtaskParents.has(key);
+}
+
+function setTaskCollapsed(task, collapsed) {
+  const key = collapseKeyForTask(task);
+  if (!key) return;
+  if (collapsed) collapsedSubtaskParents.add(key);
+  else collapsedSubtaskParents.delete(key);
+}
+
+function collapsedSubtasksStorageKey(workspaceId) {
+  return `oneweek-collapsed-subs-${workspaceId || "none"}`;
+}
+
+function readCollapsedSubtaskDbIds(workspaceId) {
+  try {
+    const raw = localStorage.getItem(collapsedSubtasksStorageKey(workspaceId));
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.map(String).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsedSubtaskDbIds(workspaceId, dbIds) {
+  if (!workspaceId) return;
+  try {
+    const key = collapsedSubtasksStorageKey(workspaceId);
+    if (!dbIds || dbIds.size === 0) {
+      localStorage.removeItem(key);
+      return;
+    }
+    localStorage.setItem(key, JSON.stringify([...dbIds]));
+  } catch {
+    /* storage blocked */
+  }
+}
+
+/** Restore collapse UI state from persisted parent dbIds for this workspace. */
+function syncCollapsedSubtasksFromStorage(tasks, workspaceId) {
+  if (!tasks?.length) return;
+  const dbIds = workspaceId ? readCollapsedSubtaskDbIds(workspaceId) : new Set();
+  for (const t of tasks) {
+    if (!t || t.subtask) continue;
+    const key = collapseKeyForTask(t);
+    if (!key || t.dbId == null) continue;
+    if (dbIds.has(String(t.dbId))) collapsedSubtaskParents.add(key);
+    else collapsedSubtaskParents.delete(key);
+  }
+}
+
+/** Drop collapse entries for deleted mains and stale dbIds no longer on the board. */
+function pruneCollapsedSubtaskStorage(tasks, removedTasks, workspaceId) {
+  if (!workspaceId) return;
+  const existing = readCollapsedSubtaskDbIds(workspaceId);
+  let changed = false;
+
+  for (const t of removedTasks || []) {
+    if (!t || t.subtask || t.dbId == null) continue;
+    const dbKey = String(t.dbId);
+    if (existing.has(dbKey)) {
+      existing.delete(dbKey);
+      changed = true;
+    }
+    collapsedSubtaskParents.delete(collapseKeyForTask(t));
+  }
+
+  const liveDbIds = new Set(
+    (tasks || [])
+      .filter((t) => !t.subtask && t.dbId != null)
+      .map((t) => String(t.dbId))
+  );
+  for (const dbKey of existing) {
+    if (!liveDbIds.has(dbKey)) {
+      existing.delete(dbKey);
+      changed = true;
+    }
+  }
+
+  if (changed) writeCollapsedSubtaskDbIds(workspaceId, existing);
+}
+
+/** Persist collapse for the given panel's tasks (merge into workspace store). */
+function persistCollapsedSubtasksToStorage(tasks, workspaceId) {
+  if (!workspaceId || !tasks) return;
+  const existing = readCollapsedSubtaskDbIds(workspaceId);
+  for (const t of tasks) {
+    if (!t || t.subtask || t.dbId == null) continue;
+    const key = String(t.dbId);
+    if (isTaskCollapsed(t)) existing.add(key);
+    else existing.delete(key);
+  }
+  writeCollapsedSubtaskDbIds(workspaceId, existing);
+}
+
 function mainTaskHasSubtasks(tasks, mainIdx) {
   if (mainIdx < 0 || mainIdx >= tasks.length) return false;
   if (tasks[mainIdx].subtask) return false;
   return mainIdx + 1 < tasks.length && tasks[mainIdx + 1].subtask;
 }
 
-function getParentMainTaskId(tasks, subtaskIdx) {
+function getParentMainTaskIndex(tasks, subtaskIdx) {
   for (let j = subtaskIdx - 1; j >= 0; j--) {
-    if (!tasks[j].subtask) return tasks[j].id;
+    if (!tasks[j].subtask) return j;
   }
-  return null;
+  return -1;
+}
+
+function getParentMainTaskId(tasks, subtaskIdx) {
+  const idx = getParentMainTaskIndex(tasks, subtaskIdx);
+  return idx >= 0 ? tasks[idx].id : null;
 }
 
 function isSubtaskRowHidden(tasks, idx) {
   const task = tasks[idx];
   if (!task?.subtask) return false;
-  const parentId = getParentMainTaskId(tasks, idx);
-  return parentId != null && collapsedSubtaskParents.has(parentId);
+  const parentIdx = getParentMainTaskIndex(tasks, idx);
+  if (parentIdx < 0) return false;
+  return isTaskCollapsed(tasks[parentIdx]);
 }
 
 function countSubtasksForMain(tasks, mainIdx) {
@@ -1225,7 +2373,7 @@ function countSubtasksForMain(tasks, mainIdx) {
   return indexAfterSubtreeOfMain(tasks, mainIdx) - mainIdx - 1;
 }
 
-function createSubtaskToggle(mainTaskId, subtaskCount, onToggle) {
+function createSubtaskToggle(mainTask, subtaskCount, onToggle) {
   const wrap = document.createElement("div");
   wrap.className = "task-subtask-toggle-wrap";
 
@@ -1237,7 +2385,8 @@ function createSubtaskToggle(mainTaskId, subtaskCount, onToggle) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "task-subtask-toggle";
-  const collapsed = collapsedSubtaskParents.has(mainTaskId);
+  const collapseKey = collapseKeyForTask(mainTask);
+  const collapsed = collapseKey != null && collapsedSubtaskParents.has(collapseKey);
   if (collapsed) {
     btn.classList.add("is-collapsed");
     wrap.classList.add("is-collapsed");
@@ -1252,10 +2401,11 @@ function createSubtaskToggle(mainTaskId, subtaskCount, onToggle) {
   btn.addEventListener("mousedown", (e) => e.preventDefault());
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (collapsedSubtaskParents.has(mainTaskId)) {
-      collapsedSubtaskParents.delete(mainTaskId);
+    if (!collapseKey) return;
+    if (collapsedSubtaskParents.has(collapseKey)) {
+      collapsedSubtaskParents.delete(collapseKey);
     } else {
-      collapsedSubtaskParents.add(mainTaskId);
+      collapsedSubtaskParents.add(collapseKey);
     }
     onToggle();
   });
@@ -1278,6 +2428,38 @@ function insertIndexBelowRowUncheckedFirst(tasks, belowIdx) {
     insertAt = fc;
   }
   return insertAt;
+}
+
+/**
+ * Where to insert the next sibling after Enter on a filled task.
+ * Mains continue after their whole subtask run; subtasks continue right below.
+ */
+function insertIndexAfterEnterContinue(tasks, idx) {
+  if (idx < 0 || idx >= tasks.length) return tasks.length;
+  const task = tasks[idx];
+  if (task.subtask) return insertIndexBelowRowUncheckedFirst(tasks, idx);
+  let insertAt = indexAfterSubtreeOfMain(tasks, idx);
+  const fc = firstCheckedTaskIndex(tasks);
+  if (!task.checked && fc !== -1 && insertAt > fc) insertAt = fc;
+  return insertAt;
+}
+
+/**
+ * Where to place a new main task after exiting an empty subtask at `removedIdx`
+ * (call after the empty row has already been spliced out).
+ */
+function insertIndexAfterEnterExitSub(tasks, parentId) {
+  if (parentId) {
+    const parentIdx = tasks.findIndex((t) => t.id === parentId);
+    if (parentIdx >= 0) {
+      let insertAt = indexAfterSubtreeOfMain(tasks, parentIdx);
+      const fc = firstCheckedTaskIndex(tasks);
+      if (fc !== -1 && insertAt > fc) insertAt = fc;
+      return insertAt;
+    }
+  }
+  const fc = firstCheckedTaskIndex(tasks);
+  return fc === -1 ? tasks.length : fc;
 }
 
 /**
@@ -1335,6 +2517,21 @@ function toggleAndRepositionTask(tasks, idx) {
   }
 
   function buildDragPayload(task) {
+    const idx = getTaskIndex(task.id);
+    const sourceRelocate = {
+      type: "general",
+      day_name: null,
+      date: getVisibleWeekMondayIso(),
+      workspace_id: getActiveWorkspaceId(),
+    };
+    if (idx !== -1) {
+      return buildDragPayloadWithSubtree(
+        state.tasks,
+        idx,
+        GENERAL_BLOCK_ID,
+        sourceRelocate
+      );
+    }
     return {
       sourceBlock: GENERAL_BLOCK_ID,
       localId: task.id,
@@ -1343,6 +2540,20 @@ function toggleAndRepositionTask(tasks, idx) {
       checked: !!task.checked,
       subtask: !!task.subtask,
       color: normalizeTaskColor(task.color),
+      subtree: [cloneTaskSnapshot(task)],
+      sourceRelocate: {
+        ...sourceRelocate,
+        rows: [
+          {
+            dbId: task.dbId ?? null,
+            content: String(task.text ?? ""),
+            completed: !!task.checked,
+            is_subtask: !!task.subtask,
+            color: normalizeTaskColor(task.color),
+            position: idx >= 0 ? idx : state.tasks.length,
+          },
+        ],
+      },
     };
   }
 
@@ -1446,7 +2657,10 @@ function toggleAndRepositionTask(tasks, idx) {
       return;
     }
 
-    const workspaceId = getActiveWorkspaceId();
+    const workspaceId = source.workspaceId ?? null;
+    if (!workspaceId) {
+      throw new Error("Task insert skipped: workspace context missing");
+    }
     const insertPayload = {
       user_id: authUserId,
       content,
@@ -1456,8 +2670,8 @@ function toggleAndRepositionTask(tasks, idx) {
       is_subtask: isSubtask,
       color,
       position,
+      workspace_id: workspaceId,
     };
-    if (workspaceId) insertPayload.workspace_id = workspaceId;
 
     const { data, error } = await supabase
       .from("tasks")
@@ -1513,112 +2727,27 @@ function toggleAndRepositionTask(tasks, idx) {
       position: typeof row.position === "number" ? row.position : i,
       _dirty: !!row.dirty,
     }));
-    normalizeSubtaskFlags(state.tasks);
+    const fixed = normalizeSubtaskFlags(state.tasks);
+    persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
+    syncCollapsedSubtasksFromStorage(state.tasks, workspaceId);
+    pruneCollapsedSubtaskStorage(state.tasks, [], workspaceId);
     return true;
   }
 
   /**
    * Combine the authoritative server snapshot with anything the user changed
-   * locally that hasn't been persisted yet, while preserving the user's
-   * client-side ordering.
+   * locally that hasn't been persisted yet.
    *
-   * Why client-side order is the source of truth: the `tasks` table has no
-   * sort column, so the server can only return rows by `created_at`. Honouring
-   * that order would erase any drag-and-drop reorder the user did, which is
-   * exactly the "tasks swap places after reload / workspace switch" bug.
+   * Server rows arrive ordered by the `position` column. We only preserve
+   * client-side order while something is still `_dirty` or a draft without a
+   * dbId — otherwise the server order wins (multi-device reorder).
    *
-   * Algorithm:
+   * Algorithm when local order must be preserved:
    *   1. Walk `localBefore` in its existing order.
-   *      - If the row exists on the server, emit it at this position; use
-   *        local content if the row is `_dirty`, otherwise use the fresh
-   *        server snapshot.
-   *      - Dirty drafts without a dbId (created locally while offline or
-   *        mid-persist) are emitted in place. If a server row has matching
-   *        content, the orphan is merged into that row instead of being
-   *        duplicated — this fixes the "ghost duplicate after reload" bug
-   *        where the create succeeded server-side but the cache still had
-   *        `dbId=null` when the page reloaded.
-   *   2. Append any server rows we haven't placed yet (e.g. added on another
-   *      device) at the end so they aren't lost.
+   *   2. Append any unused server rows at the end.
    */
-  function mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore) {
-    const serverByDbId = new Map();
-    for (const s of serverTasks) {
-      if (s.dbId) serverByDbId.set(s.dbId, s);
-    }
-
-    const usedDbIds = new Set();
-    const result = [];
-
-    function contentKey(t) {
-      return `${String(t.text ?? "").trim()}|${t.checked ? 1 : 0}|${t.subtask ? 1 : 0}`;
-    }
-    const unusedServerByContent = new Map();
-    for (const srv of serverTasks) {
-      if (!srv.dbId) continue;
-      const k = contentKey(srv);
-      if (!unusedServerByContent.has(k)) unusedServerByContent.set(k, []);
-      unusedServerByContent.get(k).push(srv);
-    }
-
-    for (const local of localBefore) {
-      if (local.dbId) {
-        const srv = serverByDbId.get(local.dbId);
-        if (!srv) {
-          // Row vanished on the server (e.g. deleted from another device).
-          if (local._dirty && !isTaskEmptyText(local.text)) {
-            result.push({ ...local, dbId: null });
-            const bucket = unusedServerByContent.get(contentKey(local));
-            if (bucket && bucket.length) bucket.shift();
-          }
-          continue;
-        }
-        usedDbIds.add(local.dbId);
-        const bucket = unusedServerByContent.get(contentKey(srv));
-        if (bucket) {
-          const idx = bucket.indexOf(srv);
-          if (idx !== -1) bucket.splice(idx, 1);
-        }
-        if (local._dirty) {
-          result.push({
-            ...srv,
-            id: local.id,
-            text: local.text,
-            checked: local.checked,
-            subtask: local.subtask,
-            color: normalizeTaskColor(local.color),
-            _dirty: true,
-          });
-        } else {
-          result.push({ ...srv, id: local.id });
-        }
-      } else if (!isTaskEmptyText(local.text)) {
-        const k = contentKey(local);
-        const bucket = unusedServerByContent.get(k);
-        const match = bucket && bucket.length ? bucket.shift() : null;
-        if (match) {
-          usedDbIds.add(match.dbId);
-          result.push({ ...match, id: local.id });
-        } else if (local._dirty) {
-          result.push({
-            id: local.id,
-            dbId: null,
-            text: local.text,
-            checked: !!local.checked,
-            subtask: !!local.subtask,
-            color: normalizeTaskColor(local.color),
-            _dirty: true,
-          });
-        }
-      }
-    }
-
-    for (const srv of serverTasks) {
-      if (!srv.dbId || usedDbIds.has(srv.dbId)) continue;
-      result.push(srv);
-    }
-
-    return result;
+  function mergeLocalEditsIntoServerSnapshotForGeneral(serverTasks, localBefore) {
+    return mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
   }
 
   async function loadTasksForUser() {
@@ -1631,6 +2760,15 @@ function toggleAndRepositionTask(tasks, idx) {
     const loadGen = ++generalLoadGen;
     const requestedWeekIso = getVisibleWeekMondayIso();
     tasksWorkspaceId = null;
+
+    // Fail closed: never load/merge without a resolved workspace — an unfiltered
+    // query would mix every workspace into one list.
+    const workspaceId = getActiveWorkspaceId();
+    if (!workspaceId) {
+      state.tasks = [];
+      render();
+      return;
+    }
 
     // Paint the cached state first so a flaky network can't hide the user's data.
     // If there's no cache for this week, clear the list so we never accidentally
@@ -1653,16 +2791,15 @@ function toggleAndRepositionTask(tasks, idx) {
 
     if (getVisibleWeekMondayIso() !== requestedWeekIso) return;
     if (loadGen !== generalLoadGen) return;
+    if (getActiveWorkspaceId() !== workspaceId) return;
 
-    const workspaceId = getActiveWorkspaceId();
-    let query = supabase
+    const { data, error } = await supabase
       .from("tasks")
       .select("id, content, completed, created_at, is_subtask, color, position")
       .eq("user_id", authUserId)
       .eq("type", "general")
-      .eq("date", requestedWeekIso);
-    if (workspaceId) query = query.eq("workspace_id", workspaceId);
-    const { data, error } = await query
+      .eq("date", requestedWeekIso)
+      .eq("workspace_id", workspaceId)
       .order("position", { ascending: true })
       .order("created_at", { ascending: true });
 
@@ -1689,10 +2826,13 @@ function toggleAndRepositionTask(tasks, idx) {
       position: row.position ?? 0,
       _dirty: false,
     }));
-    state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
-    normalizeSubtaskFlags(state.tasks);
+    state.tasks = mergeLocalEditsIntoServerSnapshotForGeneral(serverTasks, localBefore);
+    const fixed = normalizeSubtaskFlags(state.tasks);
+    persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
     syncPositionsFromArray(state.tasks);
     tasksWorkspaceId = workspaceId;
+    syncCollapsedSubtasksFromStorage(state.tasks, workspaceId);
+    pruneCollapsedSubtaskStorage(state.tasks, [], workspaceId);
     writeTasksCache(
       generalTasksCacheKey(authUserId, requestedWeekIso, workspaceId),
       state.tasks
@@ -1728,56 +2868,61 @@ function toggleAndRepositionTask(tasks, idx) {
     isAuthed = true;
     authUserId = nextUserId;
 
-    await awaitWorkspaceReady(authUserId);
+    // Workspaces are already ready via the auth hub.
     await loadTasksForUser();
     updateMoveRemainingBtn();
   }
 
-  async function initAuth() {
+  function initAuth() {
+    if (window.oneweekAuth?.subscribe) {
+      window.oneweekAuth.subscribe((session) => {
+        void handleSession(session);
+      });
+      return;
+    }
     if (!supabase) {
       console.error("Supabase client is not initialized.");
       return;
     }
-
-    const { data } = await supabase.auth.getSession();
-    await handleSession(data?.session);
-
-    supabase.auth.onAuthStateChange((_event, session) => {
-      void handleSession(session);
-    });
+    void (async () => {
+      const { data } = await supabase.auth.getSession();
+      await handleSession(data?.session);
+      supabase.auth.onAuthStateChange((_event, session) => {
+        void handleSession(session);
+      });
+    })();
   }
 
   function removeTaskRow(taskId) {
     const idx = getTaskIndex(taskId);
     if (idx === -1) return;
-    const task = state.tasks[idx];
+    const { start, count } = getTaskSubtreeSpan(state.tasks, idx);
+    const toRemove = state.tasks.slice(start, start + count);
 
-    // Remember enough to fully recreate the row on Ctrl/Cmd+Z, tied to the
-    // exact week + workspace it lived in.
     oneweekPushUndo({
       blockId: GENERAL_BLOCK_ID,
-      type: "delete",
+      type: "delete-subtree",
       weekIso: getVisibleWeekMondayIso(),
       workspaceId: getActiveWorkspaceId(),
       userId: authUserId,
-      position: idx,
-      snapshot: {
-        text: task.text,
-        checked: !!task.checked,
-        subtask: !!task.subtask,
-        color: normalizeTaskColor(task.color),
-      },
+      position: start,
+      snapshots: toRemove.map(cloneTaskSnapshot),
     });
 
-    if (task.dbId) void deleteTaskFromDb(task);
+    const deleteWork = Promise.allSettled(
+      toRemove.filter((t) => t.dbId).map((t) => deleteTaskFromDb(t))
+    );
+    trackPendingTaskDeletes(deleteWork);
     state.focusAfterRender = null;
-    state.tasks.splice(idx, 1);
+    state.tasks.splice(start, count);
+    pruneCollapsedSubtaskStorage(state.tasks, toRemove, getActiveWorkspaceId());
     schedulePersistTaskPositions();
+    showUndoDeleteHint();
     render();
   }
 
   oneweekRegisterUndoHandler(GENERAL_BLOCK_ID, async (entry) => {
-    if (entry.type !== "delete") return false;
+    if (entry.type !== "delete" && entry.type !== "delete-subtree") return false;
     // Only restore if the user is still signed in as the same user and looking
     // at the same week/workspace where the delete happened. Otherwise leave
     // the entry alone (the loop will try the next one or no-op).
@@ -1786,22 +2931,41 @@ function toggleAndRepositionTask(tasks, idx) {
     if ((entry.workspaceId || null) !== (getActiveWorkspaceId() || null)) {
       return false;
     }
-    const s = entry.snapshot || {};
-    const restored = createTask(
-      s.text ?? "",
-      !!s.checked,
-      null,
-      !!s.subtask,
-      normalizeTaskColor(s.color)
+    const snapshots =
+      entry.type === "delete-subtree" && Array.isArray(entry.snapshots)
+        ? entry.snapshots
+        : entry.snapshot
+          ? [entry.snapshot]
+          : [];
+    if (snapshots.length === 0) return false;
+    await awaitPendingTaskDeletes();
+    const at = Math.max(
+      0,
+      Math.min(entry.position ?? state.tasks.length, state.tasks.length)
     );
-    const at = Math.max(0, Math.min(entry.position ?? state.tasks.length, state.tasks.length));
-    state.tasks.splice(at, 0, restored);
-    normalizeSubtaskFlags(state.tasks);
-    state.focusAfterRender = { id: restored.id };
-    if (!isTaskEmptyText(restored.text)) {
-      markTaskDirty(restored);
-      void persistTask(restored);
+    let insertAt = at;
+    for (const s of snapshots) {
+      let restoreDbId = null;
+      if (s.dbId && (await taskRowExistsInDb(supabase, authUserId, s.dbId))) {
+        restoreDbId = s.dbId;
+      }
+      const restored = createTask(
+        s.text ?? "",
+        !!s.checked,
+        restoreDbId,
+        !!s.subtask,
+        normalizeTaskColor(s.color)
+      );
+      state.tasks.splice(insertAt, 0, restored);
+      insertAt += 1;
+      if (!isTaskEmptyText(restored.text) && !restoreDbId) {
+        markTaskDirty(restored);
+        void persistTask(restored);
+      }
     }
+    const fixed = normalizeSubtaskFlags(state.tasks);
+    persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
+    state.focusAfterRender = { id: state.tasks[at]?.id };
     schedulePersistTaskPositions();
     render();
     return true;
@@ -1816,7 +2980,8 @@ function toggleAndRepositionTask(tasks, idx) {
     const currentText = input.value;
     const task = state.tasks[idx];
     task.text = currentText;
-    normalizeSubtaskFlags(state.tasks);
+    const fixed = normalizeSubtaskFlags(state.tasks);
+    persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
     if (isTaskEmptyText(currentText)) {
       if (!task.dbId) {
         // Brand-new draft never persisted — safe to drop from local state.
@@ -1838,6 +3003,20 @@ function toggleAndRepositionTask(tasks, idx) {
     const { needRender } = await syncTaskFromInput(taskId);
     state.tasks = partitionUncheckedBeforeChecked(state.tasks);
     schedulePersistTaskPositions();
+
+    // Enter creates + focuses the next row, then the previous field's deferred
+    // blur commit lands ~50ms later. Remounting here steals focus from the new
+    // empty draft; its own blur then deletes it as an unused draft. If another
+    // task field is already focused and we didn't remove a row, skip render.
+    const ae = document.activeElement;
+    const otherTaskFocused =
+      ae?.classList?.contains("task-text") &&
+      tasksFieldRoot.contains(ae) &&
+      ae.closest(".task-row")?.dataset?.id !== taskId;
+    if (otherTaskFocused && !needRender) {
+      return true;
+    }
+
     render();
     return !needRender;
   }
@@ -1914,7 +3093,7 @@ function toggleAndRepositionTask(tasks, idx) {
       const checkbox = document.createElement("button");
       checkbox.type = "button";
       checkbox.className = `task-checkbox${task.checked ? " checked" : ""}`;
-      checkbox.setAttribute("aria-label", "Toggle task");
+      syncTaskCheckboxA11y(checkbox, task.checked);
 
       const input = document.createElement("textarea");
       input.rows = 1;
@@ -1934,7 +3113,7 @@ function toggleAndRepositionTask(tasks, idx) {
       const deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
       deleteBtn.className = "task-delete";
-      deleteBtn.setAttribute("aria-label", "Delete task");
+      wireTaskDeleteButton(deleteBtn);
 
       const colorBtn = createTaskColorButton();
       syncTaskColorButton(colorBtn, task.color);
@@ -1957,9 +3136,15 @@ function toggleAndRepositionTask(tasks, idx) {
       if (mainTaskHasSubtasks(state.tasks, i)) {
         row.appendChild(
           createSubtaskToggle(
-            taskId,
+            task,
             countSubtasksForMain(state.tasks, i),
-            render
+            () => {
+              persistCollapsedSubtasksToStorage(
+                state.tasks,
+                tasksWorkspaceId || getActiveWorkspaceId()
+              );
+              render();
+            }
           )
         );
       }
@@ -2026,32 +3211,18 @@ function toggleAndRepositionTask(tasks, idx) {
         "keydown",
         (e) => {
           if (!isAuthed) return;
-          if (!isTabNavigationKey(e)) return;
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          const idx = getTaskIndex(taskId);
-          if (idx === -1) return;
-          const task = state.tasks[idx];
-          if (e.shiftKey) {
-            task.subtask = false;
-          } else if (canIndentAsSubtask(state.tasks, idx)) {
-            task.subtask = true;
-            moveSubtaskUnderImmediateRowAbove(state.tasks, idx);
-          }
-          normalizeSubtaskFlags(state.tasks);
-          if (!isTaskEmptyText(task.text)) {
-            markTaskDirty(task);
-            void (async () => {
-              await persistTask(task);
-            })();
-          }
-          schedulePersistTaskPositions();
-          state.focusAfterRender = {
-            id: task.id,
-            start: e.target.selectionStart,
-            end: e.target.selectionEnd,
-          };
-          render();
+          handleTaskTextTabIndent(e, {
+            tasks: state.tasks,
+            taskId,
+            getTaskIndex,
+            persistTask,
+            markTaskDirty,
+            schedulePersistTaskPositions,
+            render,
+            setFocusAfterRender: (v) => {
+              state.focusAfterRender = v;
+            },
+          });
         },
         true
       );
@@ -2079,6 +3250,39 @@ function toggleAndRepositionTask(tasks, idx) {
           state.isDragging = false;
           state.draggedId = null;
           clearGlobalDragPayload();
+        },
+        {
+          getListEl: () => tasksFieldRoot.querySelector(".tasks-list"),
+          getAnchorEl: () => tasksField,
+          getIndicator: () => generalDropIndicator,
+          getDraggedId: () => state.draggedId || taskId,
+          getTaskIndex,
+          commit: (clientX, clientY) => {
+            const fromId = state.draggedId || taskId;
+            if (tryTouchCrossPanelDrop(clientX, clientY, GENERAL_BLOCK_ID)) {
+              state.draggedId = null;
+              state.isDragging = false;
+              clearGlobalDragPayload();
+              return;
+            }
+            state.draggedId = null;
+            state.isDragging = false;
+            const list = tasksFieldRoot.querySelector(".tasks-list");
+            const moved = reorderSubtreeFromTouchPoint(
+              state.tasks,
+              fromId,
+              clientX,
+              clientY,
+              list,
+              getTaskIndex
+            );
+            if (!moved) return;
+            normalizeSubtaskFlags(state.tasks);
+            applyOpenDonePartition(state.tasks);
+            schedulePersistTaskPositions();
+            state.focusAfterRender = { id: moved.id };
+            render();
+          },
         }
       );
 
@@ -2099,10 +3303,11 @@ function toggleAndRepositionTask(tasks, idx) {
         if (from === -1 || to === -1) return;
 
         const insertBefore = taskRowInsertBefore(e, row);
-        const moved = reorderTaskInArray(state.tasks, from, to, insertBefore);
+        const moved = reorderSubtreeInArray(state.tasks, from, to, insertBefore);
         if (!moved) return;
 
         normalizeSubtaskFlags(state.tasks);
+        applyOpenDonePartition(state.tasks);
         schedulePersistTaskPositions();
 
         state.focusAfterRender = { id: moved.id };
@@ -2146,16 +3351,17 @@ function toggleAndRepositionTask(tasks, idx) {
   function beginNewGeneralTaskFromEmptyClick() {
     void flushAllTaskSaves();
     ensureAtLeastOneTask();
-    for (let i = state.tasks.length - 1; i >= 0; i--) {
+    const insertAt = insertIndexForNewOpenMain(state.tasks);
+    // Reuse an empty open main already in the open section (not a stray empty
+    // subtask, and not a draft stuck inside another parent's subtree).
+    for (let i = insertAt - 1; i >= 0; i--) {
       const t = state.tasks[i];
-      if (!t.checked && isTaskEmptyText(t.text)) {
+      if (!t.checked && !t.subtask && isTaskEmptyText(t.text)) {
         state.focusAfterRender = { id: t.id };
         render();
         return;
       }
     }
-    const fc = firstCheckedTaskIndex(state.tasks);
-    const insertAt = fc === -1 ? state.tasks.length : fc;
     const newTask = createTask("", false, null, false);
     state.tasks.splice(insertAt, 0, newTask);
     state.focusAfterRender = { id: newTask.id };
@@ -2243,12 +3449,8 @@ function toggleAndRepositionTask(tasks, idx) {
     if (!id) return;
 
     const isCheckbox = e.target.classList.contains("task-checkbox");
-    const isCommit = e.target.classList.contains("task-commit");
-    const isDelete = e.target.classList.contains("task-delete");
-    const isColor = !!e.target.closest?.(".task-color");
     const isText = e.target.classList.contains("task-text");
-    if (!isCheckbox && !isText && !isCommit && !isDelete && !isColor) return;
-    if (isCommit || isDelete || isColor) return;
+    if (isTaskRowActionTarget(e)) return;
 
     if (isCheckbox) {
       let caret;
@@ -2258,10 +3460,7 @@ function toggleAndRepositionTask(tasks, idx) {
       return;
     }
 
-    // Text click enables edit mode only; it must not toggle completion.
-    if (isText) {
-      e.target.focus();
-    }
+    focusTaskRowForEdit(row, isText ? e.target : null);
   });
 
   tasksFieldRoot.addEventListener("input", (e) => {
@@ -2298,15 +3497,73 @@ function toggleAndRepositionTask(tasks, idx) {
     e.preventDefault();
 
     void (async () => {
-      const ok = await commitTask(id);
-      if (!ok) return;
-      // Enter only saves and leaves edit mode; do not open a new draft row (click empty area for that).
-      const active = document.activeElement;
-      if (active && active.classList?.contains("task-text") && tasksFieldRoot.contains(active)) {
-        active.blur();
-      }
+      await handleEnterContinue(id, input);
     })();
   });
+
+  /**
+   * Enter continues at the same level (main→main, sub→sub).
+   * Enter on an empty subtask exits to a new main after the parent group.
+   * Enter on an empty main just commits / leaves edit mode.
+   */
+  async function handleEnterContinue(taskId, inputEl) {
+    const idx = getTaskIndex(taskId);
+    if (idx === -1) return;
+    const task = state.tasks[idx];
+    const currentText = String(inputEl?.value ?? task.text ?? "");
+    task.text = currentText;
+    const empty = isTaskEmptyText(currentText);
+    const wasSub = !!task.subtask;
+
+    if (empty && wasSub) {
+      const parentId = getParentMainTaskId(state.tasks, idx);
+      if (task.dbId) void deleteTaskFromDb(task);
+      state.tasks.splice(idx, 1);
+      const insertAt = insertIndexAfterEnterExitSub(state.tasks, parentId);
+      const neu = createTask("", false, null, false);
+      state.tasks.splice(insertAt, 0, neu);
+      normalizeSubtaskFlags(state.tasks);
+      state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+      schedulePersistTaskPositions();
+      state.focusAfterRender = { id: neu.id };
+      render();
+      return;
+    }
+
+    if (empty && !wasSub) {
+      const ok = await commitTask(taskId);
+      if (!ok) return;
+      const active = document.activeElement;
+      if (
+        active &&
+        active.classList?.contains("task-text") &&
+        tasksFieldRoot.contains(active)
+      ) {
+        active.blur();
+      }
+      return;
+    }
+
+    const fixed = normalizeSubtaskFlags(state.tasks);
+    persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
+    markTaskDirty(task);
+    void persistTask(task);
+
+    const liveIdx = getTaskIndex(taskId);
+    if (liveIdx === -1) return;
+    if (wasSub) {
+      const parentIdx = getParentMainTaskIndex(state.tasks, liveIdx);
+      if (parentIdx >= 0) setTaskCollapsed(state.tasks[parentIdx], false);
+    }
+    const insertAt = insertIndexAfterEnterContinue(state.tasks, liveIdx);
+    const neu = createTask("", false, null, wasSub);
+    state.tasks.splice(insertAt, 0, neu);
+    normalizeSubtaskFlags(state.tasks);
+    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    schedulePersistTaskPositions();
+    state.focusAfterRender = { id: neu.id };
+    render();
+  }
 
   async function flushFocusedGeneralInput() {
     const active = document.activeElement;
@@ -2375,7 +3632,7 @@ function toggleAndRepositionTask(tasks, idx) {
         list,
         !!payload.checked
       );
-      showCrossDropIndicator(generalDropIndicator, list, insertAt);
+      showCrossDropIndicator(generalDropIndicator, list, insertAt, state.tasks);
       return;
     }
     updateTaskDropIndicator(
@@ -2394,83 +3651,171 @@ function toggleAndRepositionTask(tasks, idx) {
     generalDropIndicator.hide();
   });
 
+  async function handleGeneralIncomingCrossMove(payload, e) {
+    if (!payload || payload.sourceBlock === GENERAL_BLOCK_ID) return;
+
+    e.preventDefault?.();
+    e.stopPropagation?.();
+    e.stopImmediatePropagation?.();
+
+    const list = tasksFieldRoot.querySelector(".tasks-list");
+    const insertAt = computeCrossInsertIndex(
+      state.tasks,
+      getTaskIndex,
+      e,
+      list,
+      !!payload.checked
+    );
+
+    hideAllTaskDropIndicators();
+
+    const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
+    const relocateTarget = {
+      type: "general",
+      day_name: null,
+      date: getVisibleWeekMondayIso(),
+      workspace_id: getActiveWorkspaceId(),
+    };
+    const relocateUserId = authUserId;
+
+    window.dispatchEvent(
+      new CustomEvent("task-cross-move", {
+        detail: {
+          sourceBlock: payload.sourceBlock,
+          sourceLocalId: payload.localId,
+          targetBlock: GENERAL_BLOCK_ID,
+        },
+      })
+    );
+
+    const inserted = insertTasksFromCrossPayload(
+      state.tasks,
+      createTask,
+      payload,
+      safeInsertAt
+    );
+    syncCollapsedSubtasksFromStorage(state.tasks, getActiveWorkspaceId());
+    const insertedLocalIds = inserted.map((t) => t.id);
+    schedulePersistTaskPositions();
+    state.focusAfterRender = { id: inserted[0]?.id };
+    render();
+
+    await flushAllTaskSaves();
+
+    if (!crossMoveGeneralContextValid(relocateTarget)) {
+      rollbackCrossMoveOnTarget(state, insertedLocalIds);
+      const backup = takeCrossMoveSourceBackup(payload.localId);
+      if (backup) {
+        window.dispatchEvent(
+          new CustomEvent("task-cross-move-rollback", {
+            detail: {
+              sourceBlock: payload.sourceBlock,
+              targetBlock: GENERAL_BLOCK_ID,
+              position: backup.position,
+              snapshots: backup.snapshots,
+            },
+          })
+        );
+      }
+      schedulePersistTaskPositions();
+      render();
+      clearGlobalDragPayload();
+      return;
+    }
+
+    const { ok, error } = await relocateCrossMoveSubtree(
+      supabase,
+      relocateUserId,
+      payload,
+      relocateTarget,
+      safeInsertAt
+    );
+
+    if (!ok) {
+      markNetworkFailure(error);
+      console.error("Supabase move-to-general failed:", error);
+      rollbackCrossMoveOnTarget(state, insertedLocalIds);
+      const backup = takeCrossMoveSourceBackup(payload.localId);
+      if (backup) {
+        window.dispatchEvent(
+          new CustomEvent("task-cross-move-rollback", {
+            detail: {
+              sourceBlock: payload.sourceBlock,
+              targetBlock: GENERAL_BLOCK_ID,
+              position: backup.position,
+              snapshots: backup.snapshots,
+            },
+          })
+        );
+      }
+      schedulePersistTaskPositions();
+      render();
+      clearGlobalDragPayload();
+      return;
+    }
+
+    for (const t of inserted) {
+      if (!t.dbId && !isTaskEmptyText(t.text)) {
+        markTaskDirty(t);
+        await persistTask(t);
+      }
+    }
+
+    clearGlobalDragPayload();
+    void flushAllTaskSaves();
+  }
+
   tasksField.addEventListener(
     "drop",
     async (e) => {
       if (!isAuthed) return;
 
       const payload = readDragPayloadFromEvent(e);
-      if (!payload || payload.sourceBlock === GENERAL_BLOCK_ID) return;
 
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-
-      const list = tasksFieldRoot.querySelector(".tasks-list");
-      const insertAt = computeCrossInsertIndex(
-        state.tasks,
-        getTaskIndex,
-        e,
-        list,
-        !!payload.checked
-      );
-
-      hideAllTaskDropIndicators();
-
-      const text = String(payload.text ?? "");
-      const checked = !!payload.checked;
-      const sub = !!payload.subtask;
-      const color = normalizeTaskColor(payload.color);
-      const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
-
-      // Update both panels synchronously before any await — otherwise the
-      // source row snaps back while flush/relocate runs.
-      window.dispatchEvent(
-        new CustomEvent("task-cross-move", {
-          detail: {
-            sourceBlock: payload.sourceBlock,
-            sourceLocalId: payload.localId,
-            targetBlock: GENERAL_BLOCK_ID,
-          },
-        })
-      );
-
-      const moved = createTask(text, checked, payload.dbId || null, sub, color);
-      state.tasks.splice(safeInsertAt, 0, moved);
-      schedulePersistTaskPositions();
-      state.focusAfterRender = { id: moved.id };
-      render();
-
-      await flushAllTaskSaves();
-
-      if (payload.dbId) {
-        const { ok, error } = await supabaseRelocateTaskRow(supabase, authUserId, payload.dbId, {
-          type: "general",
-          day_name: null,
-          date: getVisibleWeekMondayIso(),
-          content: text,
-          completed: checked,
-          is_subtask: sub,
-          color,
-          workspace_id: getActiveWorkspaceId(),
-          position: safeInsertAt,
-        });
-        if (!ok) {
-          console.error("Supabase move-to-general failed:", error);
-          return;
-        }
+      // Same-list reorder: row drops handle mid-list targets; empty-area drops
+      // (below the last task / on the spacer) must append here or the row snaps back.
+      if (payload && payload.sourceBlock === GENERAL_BLOCK_ID) {
+        if (e.target.closest?.(".task-row")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        hideAllTaskDropIndicators();
+        const fromId = state.draggedId || payload.localId || e.dataTransfer?.getData?.("text/plain");
+        state.draggedId = null;
+        state.isDragging = false;
+        if (!fromId) return;
+        const list = tasksFieldRoot.querySelector(".tasks-list");
+        const moved = reorderTaskFromSameListDrop(
+          state.tasks,
+          fromId,
+          e,
+          list,
+          getTaskIndex
+        );
+        if (!moved) return;
+        normalizeSubtaskFlags(state.tasks);
+        applyOpenDonePartition(state.tasks);
+        schedulePersistTaskPositions();
+        state.focusAfterRender = { id: moved.id };
+        render();
+        return;
       }
 
-      if (!payload.dbId && !isTaskEmptyText(text)) {
-        markTaskDirty(moved);
-        await persistTask(moved);
-      }
+      if (!payload) return;
 
-      clearGlobalDragPayload();
-      void flushAllTaskSaves();
+      await handleGeneralIncomingCrossMove(payload, e);
     },
     true
   );
+
+  window.addEventListener("task-touch-cross-drop", async (e) => {
+    const detail = e.detail || {};
+    if (detail.targetBlock !== GENERAL_BLOCK_ID || !detail.payload) return;
+    if (!isAuthed) return;
+    await handleGeneralIncomingCrossMove(
+      detail.payload,
+      syntheticPointerEvent(detail.clientX, detail.clientY)
+    );
+  });
 
   window.addEventListener("task-cross-move", (e) => {
     const detail = e.detail || {};
@@ -2479,7 +3824,39 @@ function toggleAndRepositionTask(tasks, idx) {
 
     const idx = getTaskIndex(detail.sourceLocalId);
     if (idx === -1) return;
-    state.tasks.splice(idx, 1);
+    const { start, count } = getTaskSubtreeSpan(state.tasks, idx);
+    storeCrossMoveSourceBackup(
+      detail.sourceLocalId,
+      start,
+      state.tasks.slice(start, start + count).map(cloneTaskSnapshot)
+    );
+    state.tasks.splice(start, count);
+    render();
+  });
+
+  window.addEventListener("task-cross-move-rollback", (e) => {
+    const detail = e.detail || {};
+    if (detail.sourceBlock !== GENERAL_BLOCK_ID) return;
+
+    const at = Math.max(
+      0,
+      Math.min(detail.position ?? state.tasks.length, state.tasks.length)
+    );
+    const rows = Array.isArray(detail.snapshots) ? detail.snapshots : [];
+    let insertAt = at;
+    for (const s of rows) {
+      const restored = createTask(
+        s.text ?? "",
+        !!s.checked,
+        s.dbId || null,
+        !!s.subtask,
+        normalizeTaskColor(s.color)
+      );
+      state.tasks.splice(insertAt, 0, restored);
+      insertAt += 1;
+    }
+    normalizeSubtaskFlags(state.tasks);
+    schedulePersistTaskPositions();
     render();
   });
 
@@ -2491,6 +3868,8 @@ function toggleAndRepositionTask(tasks, idx) {
 
   window.addEventListener("workspace-change", () => {
     if (!isAuthed || !authUserId) return;
+    // Flush already ran in setActive/remove *before* the active id changed.
+    // Do not flush here: state.tasks still belong to the previous workspace.
     void loadTasksForUser();
     updateMoveRemainingBtn();
   });
@@ -2545,19 +3924,20 @@ function toggleAndRepositionTask(tasks, idx) {
     if (Number(window.__weekOffset || 0) !== 0) return;
 
     const workspaceId = getActiveWorkspaceId();
+    if (!workspaceId) {
+      console.warn("Move remaining skipped: workspace not ready");
+      return;
+    }
     const lastWeekIso = toIsoDateFromDate(getWeekMondayStart(new Date(), -1));
     const currentWeekIso = getVisibleWeekMondayIso();
 
-    let query = supabase
+    const { data, error } = await supabase
       .from("tasks")
-      .select("content, is_subtask, color, position")
+      .select("content, is_subtask, color, position, completed")
       .eq("user_id", authUserId)
       .eq("type", "general")
       .eq("date", lastWeekIso)
-      .eq("completed", false);
-    if (workspaceId) query = query.eq("workspace_id", workspaceId);
-
-    const { data, error } = await query
+      .eq("workspace_id", workspaceId)
       .order("position", { ascending: true })
       .order("created_at", { ascending: true });
 
@@ -2574,28 +3954,55 @@ function toggleAndRepositionTask(tasks, idx) {
       return;
     }
 
+    const { data: existingCurrent, error: existingErr } = await supabase
+      .from("tasks")
+      .select("content, is_subtask, color")
+      .eq("user_id", authUserId)
+      .eq("type", "general")
+      .eq("date", currentWeekIso)
+      .eq("workspace_id", workspaceId);
+
+    if (existingErr) {
+      markNetworkFailure(existingErr);
+      console.error("Move remaining: existing-week load failed:", existingErr);
+      return;
+    }
+    markNetworkSuccess();
+
+    const existingFp = new Set((existingCurrent ?? []).map(carryForwardFingerprint));
+    const toCopy = expandCarryForwardGroups(rows).filter(
+      (r) => !existingFp.has(carryForwardFingerprint(r))
+    );
+
+    if (toCopy.length === 0) {
+      markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
+      return;
+    }
+
+    const moveGen = ++moveRemainingGen;
+    const snapWorkspace = workspaceId;
+    const snapCurrentWeek = currentWeekIso;
+
     await flushAllTaskSaves();
 
-    const basePosition = state.tasks.length;
-    const inserts = rows.map((row, i) => {
-      const payload = {
-        user_id: authUserId,
-        content: String(row.content ?? ""),
-        completed: false,
-        type: "general",
-        date: currentWeekIso,
-        is_subtask: !!row.is_subtask,
-        color: normalizeTaskColor(row.color),
-        position: basePosition + i,
-      };
-      if (workspaceId) payload.workspace_id = workspaceId;
-      return payload;
-    });
+    if (!moveRemainingContextStillValid(moveGen, snapWorkspace, snapCurrentWeek)) {
+      return;
+    }
 
-    const { data: inserted, error: insertErr } = await supabase
-      .from("tasks")
-      .insert(inserts)
-      .select("id");
+    const basePosition = state.tasks.length;
+    const inserts = toCopy.map((row, i) => ({
+      user_id: authUserId,
+      content: String(row.content ?? ""),
+      completed: false,
+      type: "general",
+      date: currentWeekIso,
+      is_subtask: !!row.is_subtask,
+      color: normalizeTaskColor(row.color),
+      position: basePosition + i,
+      workspace_id: workspaceId,
+    }));
+
+    const { error: insertErr } = await supabase.from("tasks").insert(inserts);
 
     if (insertErr) {
       markNetworkFailure(insertErr);
@@ -2604,22 +4011,73 @@ function toggleAndRepositionTask(tasks, idx) {
     }
     markNetworkSuccess();
 
-    const newTasks = rows.map((row, i) => ({
-      id: `task-${state.nextId++}`,
-      dbId: inserted?.[i]?.id ?? null,
-      text: String(row.content ?? ""),
-      checked: false,
-      subtask: !!row.is_subtask,
-      color: normalizeTaskColor(row.color),
-      position: basePosition + i,
-      _dirty: false,
-    }));
+    if (!moveRemainingContextStillValid(moveGen, snapWorkspace, snapCurrentWeek)) {
+      markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
+      return;
+    }
+
+    const { data: refetched, error: refetchErr } = await supabase
+      .from("tasks")
+      .select("id, content, is_subtask, color, position")
+      .eq("user_id", authUserId)
+      .eq("type", "general")
+      .eq("date", currentWeekIso)
+      .eq("workspace_id", workspaceId)
+      .gte("position", basePosition)
+      .order("position", { ascending: true });
+
+    if (refetchErr) {
+      markNetworkFailure(refetchErr);
+      console.error("Move remaining: reconcile load failed:", refetchErr);
+      markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
+      return;
+    }
+    markNetworkSuccess();
+
+    const matchedRows = matchCarryForwardInsertRows(toCopy, refetched);
+    if (!matchedRows.some(Boolean)) {
+      console.error("Move remaining: could not reconcile inserted rows");
+      markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
+      return;
+    }
+
+    if (matchedRows.some((row, i) => !row && toCopy[i])) {
+      console.warn("Move remaining: partial reconcile — some rows unmatched");
+    }
+
+    if (!moveRemainingContextStillValid(moveGen, snapWorkspace, snapCurrentWeek)) {
+      markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
+      return;
+    }
+
+    const newTasks = toCopy
+      .map((row, i) => {
+        const server = matchedRows[i];
+        if (!server?.id) return null;
+        return {
+          id: `task-${state.nextId++}`,
+          dbId: server.id,
+          text: String(row.content ?? ""),
+          checked: false,
+          subtask: !!row.is_subtask,
+          color: normalizeTaskColor(row.color),
+          position: basePosition + i,
+          _dirty: false,
+        };
+      })
+      .filter(Boolean);
+
+    if (newTasks.length === 0) {
+      markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
+      return;
+    }
 
     state.tasks = [...state.tasks, ...newTasks];
     normalizeSubtaskFlags(state.tasks);
     state.tasks = partitionUncheckedBeforeChecked(state.tasks);
     syncPositionsFromArray(state.tasks);
     render();
+    schedulePersistTaskPositions();
 
     markMoveRemainingDone(authUserId, currentWeekIso, workspaceId);
   }
@@ -2740,6 +4198,21 @@ function toggleAndRepositionTask(tasks, idx) {
     }
 
     function buildDragPayload(task) {
+      const idx = getTaskIndex(task.id);
+      const sourceRelocate = {
+        type: "daily",
+        day_name: dayMeta.dayName,
+        date: dayMeta.date,
+        workspace_id: getActiveWorkspaceId(),
+      };
+      if (idx !== -1) {
+        return buildDragPayloadWithSubtree(
+          state.tasks,
+          idx,
+          blockId,
+          sourceRelocate
+        );
+      }
       return {
         sourceBlock: blockId,
         localId: task.id,
@@ -2748,6 +4221,20 @@ function toggleAndRepositionTask(tasks, idx) {
         checked: !!task.checked,
         subtask: !!task.subtask,
         color: normalizeTaskColor(task.color),
+        subtree: [cloneTaskSnapshot(task)],
+        sourceRelocate: {
+          ...sourceRelocate,
+          rows: [
+            {
+              dbId: task.dbId ?? null,
+              content: String(task.text ?? ""),
+              completed: !!task.checked,
+              is_subtask: !!task.subtask,
+              color: normalizeTaskColor(task.color),
+              position: idx >= 0 ? idx : state.tasks.length,
+            },
+          ],
+        },
       };
     }
 
@@ -2824,7 +4311,10 @@ function toggleAndRepositionTask(tasks, idx) {
         return;
       }
 
-      const workspaceId = getActiveWorkspaceId();
+      const workspaceId = source.workspaceId ?? null;
+      if (!workspaceId) {
+        throw new Error("Task insert skipped: workspace context missing");
+      }
       const insertPayload = {
         user_id: currentUserId,
         content,
@@ -2835,8 +4325,8 @@ function toggleAndRepositionTask(tasks, idx) {
         is_subtask: isSubtask,
         color,
         position,
+        workspace_id: workspaceId,
       };
-      if (workspaceId) insertPayload.workspace_id = workspaceId;
 
       const { data, error } = await supabase
         .from("tasks")
@@ -2898,89 +4388,20 @@ function toggleAndRepositionTask(tasks, idx) {
         _dirty: !!row.dirty,
       }));
       normalizeSubtaskFlags(state.tasks);
+      syncCollapsedSubtasksFromStorage(state.tasks, workspaceId);
+      pruneCollapsedSubtaskStorage(state.tasks, [], workspaceId);
       return true;
     }
 
-    /** See the general-panel version above for the rationale; this is the
-     *  daily-panel mirror. Daily tasks also pass through `stabilizeTimeSorted`
-     *  after the merge, so timed rows still snap into the time-sorted order. */
-    function mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore) {
-      const serverByDbId = new Map();
-      for (const s of serverTasks) {
-        if (s.dbId) serverByDbId.set(s.dbId, s);
-      }
+    function dailyTaskMergeContentKey(t) {
+      const color = normalizeTaskColor(t.color) || "";
+      return `${moveTimeToStart(String(t.text ?? "")).trim()}|${t.checked ? 1 : 0}|${t.subtask ? 1 : 0}|${color}`;
+    }
 
-      const usedDbIds = new Set();
-      const result = [];
-
-      function contentKey(t) {
-        return `${moveTimeToStart(String(t.text ?? "")).trim()}|${t.checked ? 1 : 0}|${t.subtask ? 1 : 0}`;
-      }
-      const unusedServerByContent = new Map();
-      for (const srv of serverTasks) {
-        if (!srv.dbId) continue;
-        const k = contentKey(srv);
-        if (!unusedServerByContent.has(k)) unusedServerByContent.set(k, []);
-        unusedServerByContent.get(k).push(srv);
-      }
-
-      for (const local of localBefore) {
-        if (local.dbId) {
-          const srv = serverByDbId.get(local.dbId);
-          if (!srv) {
-            if (local._dirty && !isTaskEmptyText(local.text)) {
-              result.push({ ...local, dbId: null });
-              const bucket = unusedServerByContent.get(contentKey(local));
-              if (bucket && bucket.length) bucket.shift();
-            }
-            continue;
-          }
-          usedDbIds.add(local.dbId);
-          const bucket = unusedServerByContent.get(contentKey(srv));
-          if (bucket) {
-            const idx = bucket.indexOf(srv);
-            if (idx !== -1) bucket.splice(idx, 1);
-          }
-          if (local._dirty) {
-            result.push({
-              ...srv,
-              id: local.id,
-              text: local.text,
-              checked: local.checked,
-              subtask: local.subtask,
-              color: normalizeTaskColor(local.color),
-              _dirty: true,
-            });
-          } else {
-            result.push({ ...srv, id: local.id });
-          }
-        } else if (!isTaskEmptyText(local.text)) {
-          const k = contentKey(local);
-          const bucket = unusedServerByContent.get(k);
-          const match = bucket && bucket.length ? bucket.shift() : null;
-          if (match) {
-            usedDbIds.add(match.dbId);
-            result.push({ ...match, id: local.id });
-          } else if (local._dirty) {
-            result.push({
-              id: local.id,
-              dbId: null,
-              text: local.text,
-              checked: !!local.checked,
-              subtask: !!local.subtask,
-              color: normalizeTaskColor(local.color),
-              _dirty: true,
-            });
-          }
-        }
-      }
-
-      for (const srv of serverTasks) {
-        if (!srv.dbId || usedDbIds.has(srv.dbId)) continue;
-        result.push(srv);
-      }
-
-      return result;
+    function mergeLocalEditsIntoServerSnapshotForDay(serverTasks, localBefore) {
+      return mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore, {
+        contentKeyFn: dailyTaskMergeContentKey,
+      });
     }
 
     async function loadTasksForDay() {
@@ -2992,21 +4413,27 @@ function toggleAndRepositionTask(tasks, idx) {
       const cachedWorkspaceId = getActiveWorkspaceId();
       tasksWorkspaceId = null;
 
+      // Fail closed: no workspace → empty day (never mix all workspaces).
+      if (!cachedWorkspaceId) {
+        state.tasks = [];
+        render();
+        return;
+      }
+
       // Paint the cache before the network call. If there's nothing cached for
       // this day, clear the list so we never show stale data from another day.
       const hadCache = applyCachedDayTasks();
       if (!hadCache) state.tasks = [];
       render();
 
-      let dayQuery = supabase
+      const { data, error } = await supabase
         .from("tasks")
         .select("id, content, completed, created_at, is_subtask, color, position")
         .eq("user_id", currentUserId)
         .eq("type", "daily")
         .eq("day_name", cachedDayName)
-        .eq("date", cachedDate);
-      if (cachedWorkspaceId) dayQuery = dayQuery.eq("workspace_id", cachedWorkspaceId);
-      const { data, error } = await dayQuery
+        .eq("date", cachedDate)
+        .eq("workspace_id", cachedWorkspaceId)
         .order("position", { ascending: true })
         .order("created_at", { ascending: true });
 
@@ -3035,11 +4462,14 @@ function toggleAndRepositionTask(tasks, idx) {
         position: row.position ?? 0,
         _dirty: false,
       }));
-      state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
-      normalizeSubtaskFlags(state.tasks);
+      state.tasks = mergeLocalEditsIntoServerSnapshotForDay(serverTasks, localBefore);
+      const fixed = normalizeSubtaskFlags(state.tasks);
+      persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
       stabilizeTimeSorted();
       syncPositionsFromArray(state.tasks);
       tasksWorkspaceId = cachedWorkspaceId;
+      syncCollapsedSubtasksFromStorage(state.tasks, cachedWorkspaceId);
+      pruneCollapsedSubtaskStorage(state.tasks, [], cachedWorkspaceId);
       writeTasksCache(
         dailyTasksCacheKey(currentUserId, cachedDayName, cachedDate, cachedWorkspaceId),
         state.tasks
@@ -3071,34 +4501,35 @@ function toggleAndRepositionTask(tasks, idx) {
     function removeTaskRow(taskId) {
       const idx = getTaskIndex(taskId);
       if (idx === -1) return;
-      const task = state.tasks[idx];
+      const { start, count } = getTaskSubtreeSpan(state.tasks, idx);
+      const toRemove = state.tasks.slice(start, start + count);
 
       oneweekPushUndo({
         blockId,
-        type: "delete",
+        type: "delete-subtree",
         dayName: dayMeta.dayName,
         date: dayMeta.date,
         workspaceId: getActiveWorkspaceId(),
         userId: currentUserId,
-        position: idx,
-        snapshot: {
-          text: task.text,
-          checked: !!task.checked,
-          subtask: !!task.subtask,
-          color: normalizeTaskColor(task.color),
-        },
+        position: start,
+        snapshots: toRemove.map(cloneTaskSnapshot),
       });
 
-      if (task.dbId) void deleteTaskFromDb(task);
+      const deleteWork = Promise.allSettled(
+        toRemove.filter((t) => t.dbId).map((t) => deleteTaskFromDb(t))
+      );
+      trackPendingTaskDeletes(deleteWork);
       state.focusAfterRender = null;
-      state.tasks.splice(idx, 1);
+      state.tasks.splice(start, count);
+      pruneCollapsedSubtaskStorage(state.tasks, toRemove, getActiveWorkspaceId());
       stabilizeTimeSorted();
       schedulePersistTaskPositions();
+      showUndoDeleteHint();
       render();
     }
 
     oneweekRegisterUndoHandler(blockId, async (entry) => {
-      if (entry.type !== "delete") return false;
+      if (entry.type !== "delete" && entry.type !== "delete-subtree") return false;
       if (!currentUserId || entry.userId !== currentUserId) return false;
       if (entry.dayName !== dayMeta.dayName || entry.date !== dayMeta.date) {
         return false;
@@ -3106,23 +4537,45 @@ function toggleAndRepositionTask(tasks, idx) {
       if ((entry.workspaceId || null) !== (getActiveWorkspaceId() || null)) {
         return false;
       }
-      const s = entry.snapshot || {};
-      const restored = createTask(
-        moveTimeToStart(s.text ?? ""),
-        !!s.checked,
-        null,
-        !!s.subtask,
-        normalizeTaskColor(s.color)
+      const snapshots =
+        entry.type === "delete-subtree" && Array.isArray(entry.snapshots)
+          ? entry.snapshots
+          : entry.snapshot
+            ? [entry.snapshot]
+            : [];
+      if (snapshots.length === 0) return false;
+      await awaitPendingTaskDeletes();
+      const at = Math.max(
+        0,
+        Math.min(entry.position ?? state.tasks.length, state.tasks.length)
       );
-      const at = Math.max(0, Math.min(entry.position ?? state.tasks.length, state.tasks.length));
-      state.tasks.splice(at, 0, restored);
-      stabilizeTimeSorted();
-      normalizeSubtaskFlags(state.tasks);
-      state.focusAfterRender = { id: restored.id };
-      if (!isTaskEmptyText(restored.text)) {
-        markTaskDirty(restored);
-        void persistTask(restored);
+      let insertAt = at;
+      for (const s of snapshots) {
+        let restoreDbId = null;
+        if (
+          s.dbId &&
+          (await taskRowExistsInDb(supabase, currentUserId, s.dbId))
+        ) {
+          restoreDbId = s.dbId;
+        }
+        const restored = createTask(
+          moveTimeToStart(s.text ?? ""),
+          !!s.checked,
+          restoreDbId,
+          !!s.subtask,
+          normalizeTaskColor(s.color)
+        );
+        state.tasks.splice(insertAt, 0, restored);
+        insertAt += 1;
+        if (!isTaskEmptyText(restored.text) && !restoreDbId) {
+          markTaskDirty(restored);
+          void persistTask(restored);
+        }
       }
+      stabilizeTimeSorted();
+      const fixed = normalizeSubtaskFlags(state.tasks);
+      persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
+      state.focusAfterRender = { id: state.tasks[at]?.id };
       schedulePersistTaskPositions();
       render();
       return true;
@@ -3138,7 +4591,8 @@ function toggleAndRepositionTask(tasks, idx) {
       if (currentText !== input.value) input.value = currentText;
       const task = state.tasks[idx];
       task.text = currentText;
-      normalizeSubtaskFlags(state.tasks);
+      const fixed = normalizeSubtaskFlags(state.tasks);
+      persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
       if (isTaskEmptyText(currentText)) {
         if (!task.dbId) {
           state.focusAfterRender = null;
@@ -3162,43 +4616,51 @@ function toggleAndRepositionTask(tasks, idx) {
 
     async function commitTask(taskId) {
       const { needRender } = await syncTaskFromInput(taskId);
+      // Same Enter→blur race as the general panel: don't remount while the
+      // newly focused empty draft is active unless this commit removed a row.
+      const ae = document.activeElement;
+      const otherTaskFocused =
+        ae?.classList?.contains("task-text") &&
+        tasksEl.contains(ae) &&
+        ae.closest(".task-row")?.dataset?.id !== taskId;
+      if (otherTaskFocused && !needRender) {
+        return true;
+      }
       render();
       return !needRender;
     }
 
     function stabilizeTimeSorted() {
-      // Keep untimed tasks in their current index "slots",
-      // and sort only timed tasks (smaller time = higher position).
-      const info = state.tasks.map((t, index) => ({
-        task: t,
-        index,
-        minutes: parseTimeMinutes(t.text),
-      }));
+      const groups = splitIntoTaskGroups(state.tasks);
+      const tagged = groups.map((group, gi) => {
+        const subs = group.subs.slice().sort((a, b) => {
+          const ma = parseTimeMinutes(a.text);
+          const mb = parseTimeMinutes(b.text);
+          if (ma == null && mb == null) return 0;
+          if (ma == null) return 1;
+          if (mb == null) return -1;
+          return ma - mb;
+        });
+        const mainMinutes = parseTimeMinutes(group.main.text);
+        return {
+          group: { main: group.main, subs },
+          gi,
+          mainMinutes,
+          isTimed: mainMinutes != null,
+        };
+      });
 
-      const untimedIndices = new Set();
-      const untimedTasksInOrder = [];
-      const timedTasks = [];
-
-      for (const item of info) {
-        if (item.minutes == null) {
-          untimedIndices.add(item.index);
-          untimedTasksInOrder.push(item.task);
-        } else {
-          timedTasks.push({ task: item.task, minutes: item.minutes, index: item.index });
-        }
-      }
-
-      timedTasks.sort((a, b) => (a.minutes - b.minutes) || (a.index - b.index));
+      const untimedQueue = tagged.filter((t) => !t.isTimed);
+      const timedQueue = tagged
+        .filter((t) => t.isTimed)
+        .sort((a, b) => (a.mainMinutes - b.mainMinutes) || (a.gi - b.gi));
 
       const result = [];
-      let u = 0;
-      let t = 0;
-
-      for (let i = 0; i < state.tasks.length; i++) {
-        if (untimedIndices.has(i)) {
-          result.push(untimedTasksInOrder[u++]);
-        } else {
-          result.push(timedTasks[t++].task);
+      for (const group of groups) {
+        const mainMinutes = parseTimeMinutes(group.main.text);
+        const next = mainMinutes != null ? timedQueue.shift() : untimedQueue.shift();
+        if (next) {
+          result.push(next.group.main, ...next.group.subs);
         }
       }
 
@@ -3250,7 +4712,7 @@ function toggleAndRepositionTask(tasks, idx) {
         const checkbox = document.createElement("button");
         checkbox.type = "button";
         checkbox.className = `task-checkbox${task.checked ? " checked" : ""}`;
-        checkbox.setAttribute("aria-label", "Toggle task");
+        syncTaskCheckboxA11y(checkbox, task.checked);
 
         const input = document.createElement("textarea");
         input.rows = 1;
@@ -3274,7 +4736,7 @@ function toggleAndRepositionTask(tasks, idx) {
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
         deleteBtn.className = "task-delete";
-        deleteBtn.setAttribute("aria-label", "Delete task");
+        wireTaskDeleteButton(deleteBtn);
 
         const colorBtn = createTaskColorButton();
         syncTaskColorButton(colorBtn, task.color);
@@ -3293,9 +4755,15 @@ function toggleAndRepositionTask(tasks, idx) {
         if (mainTaskHasSubtasks(state.tasks, i)) {
           row.appendChild(
             createSubtaskToggle(
-              taskId,
+              task,
               countSubtasksForMain(state.tasks, i),
-              render
+              () => {
+                persistCollapsedSubtasksToStorage(
+                  state.tasks,
+                  tasksWorkspaceId || getActiveWorkspaceId()
+                );
+                render();
+              }
             )
           );
         }
@@ -3362,32 +4830,18 @@ function toggleAndRepositionTask(tasks, idx) {
           "keydown",
           (e) => {
             if (!isAuthed) return;
-            if (!isTabNavigationKey(e)) return;
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            const idx = getTaskIndex(taskId);
-            if (idx === -1) return;
-            const task = state.tasks[idx];
-            if (e.shiftKey) {
-              task.subtask = false;
-            } else if (canIndentAsSubtask(state.tasks, idx)) {
-              task.subtask = true;
-              moveSubtaskUnderImmediateRowAbove(state.tasks, idx);
-            }
-            normalizeSubtaskFlags(state.tasks);
-            if (!isTaskEmptyText(task.text)) {
-              markTaskDirty(task);
-              void (async () => {
-                await persistTask(task);
-              })();
-            }
-            schedulePersistTaskPositions();
-            state.focusAfterRender = {
-              id: task.id,
-              start: e.target.selectionStart,
-              end: e.target.selectionEnd,
-            };
-            render();
+            handleTaskTextTabIndent(e, {
+              tasks: state.tasks,
+              taskId,
+              getTaskIndex,
+              persistTask,
+              markTaskDirty,
+              schedulePersistTaskPositions,
+              render,
+              setFocusAfterRender: (v) => {
+                state.focusAfterRender = v;
+              },
+            });
           },
           true
         );
@@ -3405,7 +4859,8 @@ function toggleAndRepositionTask(tasks, idx) {
               markTaskDirty(task);
             }
             normalizeSubtaskFlags(state.tasks);
-            stabilizeTimeSorted();
+            // Do not stabilizeTimeSorted on dragstart — reshuffling under the
+            // pointer feels like the row jumped. Time order is applied on commit.
             const payloadTask =
               state.tasks.find((t) => t.id === taskId) || task;
             state.isDragging = true;
@@ -3420,6 +4875,39 @@ function toggleAndRepositionTask(tasks, idx) {
             state.isDragging = false;
             state.draggedId = null;
             clearGlobalDragPayload();
+          },
+          {
+            getListEl: () => tasksEl.querySelector(".tasks-list"),
+            getAnchorEl: () => tasksEl,
+            getIndicator: () => dayDropIndicator,
+            getDraggedId: () => state.draggedId || taskId,
+            getTaskIndex,
+            commit: (clientX, clientY) => {
+              const fromId = state.draggedId || taskId;
+              if (tryTouchCrossPanelDrop(clientX, clientY, blockId)) {
+                state.draggedId = null;
+                state.isDragging = false;
+                clearGlobalDragPayload();
+                return;
+              }
+              state.draggedId = null;
+              state.isDragging = false;
+              const list = tasksEl.querySelector(".tasks-list");
+              const moved = reorderSubtreeFromTouchPoint(
+                state.tasks,
+                fromId,
+                clientX,
+                clientY,
+                list,
+                getTaskIndex
+              );
+              if (!moved) return;
+              normalizeSubtaskFlags(state.tasks);
+              applyOpenDonePartition(state.tasks);
+              schedulePersistTaskPositions();
+              state.focusAfterRender = { id: moved.id };
+              render();
+            },
           }
         );
 
@@ -3440,11 +4928,13 @@ function toggleAndRepositionTask(tasks, idx) {
           if (from === -1 || to === -1) return;
 
           const insertBefore = taskRowInsertBefore(e, row);
-          const moved = reorderTaskInArray(state.tasks, from, to, insertBefore);
+          const moved = reorderSubtreeInArray(state.tasks, from, to, insertBefore);
           if (!moved) return;
 
-          stabilizeTimeSorted();
+          // Keep the drag order: do not re-sort by hh:mm here (that snapped
+          // timed rows back). Time sort still runs on blur/commit/Enter.
           normalizeSubtaskFlags(state.tasks);
+          applyOpenDonePartition(state.tasks);
           schedulePersistTaskPositions();
 
           state.focusAfterRender = { id: moved.id };
@@ -3479,16 +4969,15 @@ function toggleAndRepositionTask(tasks, idx) {
     /** Click on empty list area: reuse empty draft row or insert a new one, then focus. */
     function beginNewPlanFromEmptyClick() {
       void flushAllTaskSaves();
-      for (let i = state.tasks.length - 1; i >= 0; i--) {
+      const insertAt = insertIndexForNewOpenMain(state.tasks);
+      for (let i = insertAt - 1; i >= 0; i--) {
         const t = state.tasks[i];
-        if (!t.checked && isTaskEmptyText(t.text)) {
+        if (!t.checked && !t.subtask && isTaskEmptyText(t.text)) {
           state.focusAfterRender = { id: t.id };
           render();
           return;
         }
       }
-      const fc = firstCheckedTaskIndex(state.tasks);
-      const insertAt = fc === -1 ? state.tasks.length : fc;
       const newTask = createTask("", false, null, false);
       state.tasks.splice(insertAt, 0, newTask);
       state.focusAfterRender = { id: newTask.id };
@@ -3539,8 +5028,6 @@ function toggleAndRepositionTask(tasks, idx) {
 
       const row = e.target.closest(".task-row");
       const isCheckbox = e.target.classList && e.target.classList.contains("task-checkbox");
-      const isCommit = e.target.classList && e.target.classList.contains("task-commit");
-      const isDelete = e.target.classList && e.target.classList.contains("task-delete");
       const isText = e.target.classList && e.target.classList.contains("task-text");
 
       if (row) {
@@ -3552,24 +5039,9 @@ function toggleAndRepositionTask(tasks, idx) {
           return;
         }
 
-        const isColor = !!e.target.closest?.(".task-color");
-        const isDragHandle =
-          e.target.classList?.contains("task-drag-handle") ||
-          e.target.classList?.contains("task-drag-handle-icon") ||
-          !!e.target.closest?.(".task-drag-handle");
+        if (isTaskRowActionTarget(e)) return;
 
-        if (isCommit || isDelete || isColor || isDragHandle) {
-          return;
-        }
-
-        if (isText) {
-          e.target.focus();
-          return;
-        }
-
-        // Click on bar / main wrapper should still go to edit mode.
-        const input = row.querySelector(".task-text");
-        if (input) input.focus();
+        focusTaskRowForEdit(row, isText ? e.target : null);
         return;
       }
 
@@ -3613,15 +5085,75 @@ function toggleAndRepositionTask(tasks, idx) {
       e.preventDefault();
 
       void (async () => {
-        const ok = await commitTask(id);
-        if (!ok) return;
-        // Enter only saves and leaves edit mode; do not open a new draft row (click empty area for that).
-        const active = document.activeElement;
-        if (active && active.classList?.contains("task-text") && tasksEl.contains(active)) {
-          active.blur();
-        }
+        await handleEnterContinue(id, input);
       })();
     });
+
+    /**
+     * Enter continues at the same level (main→main, sub→sub).
+     * Enter on an empty subtask exits to a new main after the parent group.
+     * Enter on an empty main just commits / leaves edit mode.
+     */
+    async function handleEnterContinue(taskId, inputEl) {
+      const idx = getTaskIndex(taskId);
+      if (idx === -1) return;
+      const task = state.tasks[idx];
+      let currentText = String(inputEl?.value ?? task.text ?? "");
+      currentText = moveTimeToStart(currentText);
+      if (inputEl && currentText !== inputEl.value) inputEl.value = currentText;
+      task.text = currentText;
+      const empty = isTaskEmptyText(currentText);
+      const wasSub = !!task.subtask;
+
+      if (empty && wasSub) {
+        const parentId = getParentMainTaskId(state.tasks, idx);
+        if (task.dbId) void deleteTaskFromDb(task);
+        state.tasks.splice(idx, 1);
+        const insertAt = insertIndexAfterEnterExitSub(state.tasks, parentId);
+        const neu = createTask("", false, null, false);
+        state.tasks.splice(insertAt, 0, neu);
+        normalizeSubtaskFlags(state.tasks);
+        stabilizeTimeSorted();
+        schedulePersistTaskPositions();
+        state.focusAfterRender = { id: neu.id };
+        render();
+        return;
+      }
+
+      if (empty && !wasSub) {
+        const ok = await commitTask(taskId);
+        if (!ok) return;
+        const active = document.activeElement;
+        if (
+          active &&
+          active.classList?.contains("task-text") &&
+          tasksEl.contains(active)
+        ) {
+          active.blur();
+        }
+        return;
+      }
+
+      const fixed = normalizeSubtaskFlags(state.tasks);
+      persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
+      markTaskDirty(task);
+      void persistTask(task);
+
+      const liveIdx = getTaskIndex(taskId);
+      if (liveIdx === -1) return;
+      if (wasSub) {
+        const parentIdx = getParentMainTaskIndex(state.tasks, liveIdx);
+        if (parentIdx >= 0) setTaskCollapsed(state.tasks[parentIdx], false);
+      }
+      const insertAt = insertIndexAfterEnterContinue(state.tasks, liveIdx);
+      const neu = createTask("", false, null, wasSub);
+      state.tasks.splice(insertAt, 0, neu);
+      normalizeSubtaskFlags(state.tasks);
+      stabilizeTimeSorted();
+      schedulePersistTaskPositions();
+      state.focusAfterRender = { id: neu.id };
+      render();
+    }
 
     async function flushFocusedDayInput() {
       const active = document.activeElement;
@@ -3672,7 +5204,7 @@ function toggleAndRepositionTask(tasks, idx) {
           list,
           !!payload.checked
         );
-        showCrossDropIndicator(dayDropIndicator, list, insertAt);
+        showCrossDropIndicator(dayDropIndicator, list, insertAt, state.tasks);
         return;
       }
       updateTaskDropIndicator(tasksEl, dayDropIndicator, list, e, state.draggedId, getTaskIndex);
@@ -3684,80 +5216,179 @@ function toggleAndRepositionTask(tasks, idx) {
       dayDropIndicator.hide();
     });
 
+    async function handleDailyIncomingCrossMove(payload, e) {
+      if (!payload || payload.sourceBlock === blockId) return;
+
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      e.stopImmediatePropagation?.();
+
+      const list = tasksEl.querySelector(".tasks-list");
+      const insertAt = computeCrossInsertIndex(
+        state.tasks,
+        getTaskIndex,
+        e,
+        list,
+        !!payload.checked
+      );
+
+      hideAllTaskDropIndicators();
+
+      const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
+      const relocateTarget = {
+        type: "daily",
+        day_name: dayMeta.dayName,
+        date: dayMeta.date,
+        workspace_id: getActiveWorkspaceId(),
+      };
+      const relocateUserId = currentUserId;
+
+      window.dispatchEvent(
+        new CustomEvent("task-cross-move", {
+          detail: {
+            sourceBlock: payload.sourceBlock,
+            sourceLocalId: payload.localId,
+            targetBlock: blockId,
+          },
+        })
+      );
+
+      const inserted = insertTasksFromCrossPayload(
+        state.tasks,
+        (text, checked, dbId, sub, color) =>
+          createTask(moveTimeToStart(text), checked, dbId, sub, color),
+        payload,
+        safeInsertAt
+      );
+      syncCollapsedSubtasksFromStorage(state.tasks, getActiveWorkspaceId());
+      const insertedLocalIds = inserted.map((t) => t.id);
+      stabilizeTimeSorted();
+      normalizeSubtaskFlags(state.tasks);
+      schedulePersistTaskPositions();
+      state.focusAfterRender = { id: inserted[0]?.id };
+      render();
+
+      await flushAllTaskSaves();
+
+      if (
+        relocateTarget.date !== dayMeta.date ||
+        relocateTarget.day_name !== dayMeta.dayName ||
+        relocateTarget.workspace_id !== getActiveWorkspaceId()
+      ) {
+        rollbackCrossMoveOnTarget(state, insertedLocalIds);
+        const backup = takeCrossMoveSourceBackup(payload.localId);
+        if (backup) {
+          window.dispatchEvent(
+            new CustomEvent("task-cross-move-rollback", {
+              detail: {
+                sourceBlock: payload.sourceBlock,
+                targetBlock: blockId,
+                position: backup.position,
+                snapshots: backup.snapshots,
+              },
+            })
+          );
+        }
+        stabilizeTimeSorted();
+        schedulePersistTaskPositions();
+        render();
+        clearGlobalDragPayload();
+        return;
+      }
+
+      const { ok, error } = await relocateCrossMoveSubtree(
+        supabase,
+        relocateUserId,
+        payload,
+        relocateTarget,
+        safeInsertAt,
+        { normalizeContent: moveTimeToStart }
+      );
+
+      if (!ok) {
+        markNetworkFailure(error);
+        console.error("Supabase move-to-day failed:", error);
+        rollbackCrossMoveOnTarget(state, insertedLocalIds);
+        const backup = takeCrossMoveSourceBackup(payload.localId);
+        if (backup) {
+          window.dispatchEvent(
+            new CustomEvent("task-cross-move-rollback", {
+              detail: {
+                sourceBlock: payload.sourceBlock,
+                targetBlock: blockId,
+                position: backup.position,
+                snapshots: backup.snapshots,
+              },
+            })
+          );
+        }
+        stabilizeTimeSorted();
+        schedulePersistTaskPositions();
+        render();
+        clearGlobalDragPayload();
+        return;
+      }
+
+      for (const t of inserted) {
+        if (!t.dbId && !isTaskEmptyText(t.text)) {
+          markTaskDirty(t);
+          await persistTask(t);
+        }
+      }
+
+      clearGlobalDragPayload();
+      void flushAllTaskSaves();
+    }
+
+    window.addEventListener("task-touch-cross-drop", async (e) => {
+      const detail = e.detail || {};
+      if (detail.targetBlock !== blockId || !detail.payload) return;
+      if (!isAuthed) return;
+      await handleDailyIncomingCrossMove(
+        detail.payload,
+        syntheticPointerEvent(detail.clientX, detail.clientY)
+      );
+    });
+
     tasksEl.addEventListener(
       "drop",
       async (e) => {
         if (!isAuthed) return;
 
         const payload = readDragPayloadFromEvent(e);
-        if (!payload || payload.sourceBlock === blockId) return;
 
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-
-        const list = tasksEl.querySelector(".tasks-list");
-        const insertAt = computeCrossInsertIndex(
-          state.tasks,
-          getTaskIndex,
-          e,
-          list,
-          !!payload.checked
-        );
-
-        hideAllTaskDropIndicators();
-
-        const textNorm = moveTimeToStart(payload.text);
-        const checked = !!payload.checked;
-        const sub = !!payload.subtask;
-        const color = normalizeTaskColor(payload.color);
-        const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
-
-        window.dispatchEvent(
-          new CustomEvent("task-cross-move", {
-            detail: {
-              sourceBlock: payload.sourceBlock,
-              sourceLocalId: payload.localId,
-              targetBlock: blockId,
-            },
-          })
-        );
-
-        const moved = createTask(textNorm, checked, payload.dbId || null, sub, color);
-        state.tasks.splice(safeInsertAt, 0, moved);
-        stabilizeTimeSorted();
-        normalizeSubtaskFlags(state.tasks);
-        schedulePersistTaskPositions();
-        state.focusAfterRender = { id: moved.id };
-        render();
-
-        await flushAllTaskSaves();
-
-        if (payload.dbId) {
-          const { ok, error } = await supabaseRelocateTaskRow(supabase, currentUserId, payload.dbId, {
-            type: "daily",
-            day_name: dayMeta.dayName,
-            date: dayMeta.date,
-            content: String(textNorm),
-            completed: checked,
-            is_subtask: sub,
-            color,
-            workspace_id: getActiveWorkspaceId(),
-            position: safeInsertAt,
-          });
-          if (!ok) {
-            console.error("Supabase move-to-day failed:", error);
-            return;
-          }
+        // Same-list reorder into empty space below the last row (common on mobile
+        // when the action toolbar covers the final task).
+        if (payload && payload.sourceBlock === blockId) {
+          if (e.target.closest?.(".task-row")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          hideAllTaskDropIndicators();
+          const fromId =
+            state.draggedId || payload.localId || e.dataTransfer?.getData?.("text/plain");
+          state.draggedId = null;
+          state.isDragging = false;
+          if (!fromId) return;
+          const list = tasksEl.querySelector(".tasks-list");
+          const moved = reorderTaskFromSameListDrop(
+            state.tasks,
+            fromId,
+            e,
+            list,
+            getTaskIndex
+          );
+          if (!moved) return;
+          normalizeSubtaskFlags(state.tasks);
+          applyOpenDonePartition(state.tasks);
+          schedulePersistTaskPositions();
+          state.focusAfterRender = { id: moved.id };
+          render();
+          return;
         }
 
-        if (!payload.dbId && !isTaskEmptyText(textNorm)) {
-          markTaskDirty(moved);
-          await persistTask(moved);
-        }
+        if (!payload) return;
 
-        clearGlobalDragPayload();
-        void flushAllTaskSaves();
+        await handleDailyIncomingCrossMove(payload, e);
       },
       true
     );
@@ -3780,7 +5411,7 @@ function toggleAndRepositionTask(tasks, idx) {
       isAuthed = true;
       currentUserId = nextUserId;
 
-      await awaitWorkspaceReady(userId);
+      // Workspaces are already ready via the auth hub.
       await loadTasksForDay();
     }
 
@@ -3791,7 +5422,40 @@ function toggleAndRepositionTask(tasks, idx) {
 
       const idx = getTaskIndex(detail.sourceLocalId);
       if (idx === -1) return;
-      state.tasks.splice(idx, 1);
+      const { start, count } = getTaskSubtreeSpan(state.tasks, idx);
+      storeCrossMoveSourceBackup(
+        detail.sourceLocalId,
+        start,
+        state.tasks.slice(start, start + count).map(cloneTaskSnapshot)
+      );
+      state.tasks.splice(start, count);
+      render();
+    });
+
+    window.addEventListener("task-cross-move-rollback", (e) => {
+      const detail = e.detail || {};
+      if (detail.sourceBlock !== blockId) return;
+
+      const at = Math.max(
+        0,
+        Math.min(detail.position ?? state.tasks.length, state.tasks.length)
+      );
+      const rows = Array.isArray(detail.snapshots) ? detail.snapshots : [];
+      let insertAt = at;
+      for (const s of rows) {
+        const restored = createTask(
+          moveTimeToStart(s.text ?? ""),
+          !!s.checked,
+          s.dbId || null,
+          !!s.subtask,
+          normalizeTaskColor(s.color)
+        );
+        state.tasks.splice(insertAt, 0, restored);
+        insertAt += 1;
+      }
+      stabilizeTimeSorted();
+      normalizeSubtaskFlags(state.tasks);
+      schedulePersistTaskPositions();
       render();
     });
 
@@ -3803,6 +5467,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     window.addEventListener("workspace-change", async () => {
       if (!isAuthed) return;
+      // Flush already ran in setActive/remove before the active id changed.
       await loadTasksForDay();
     });
 
@@ -3818,21 +5483,27 @@ function toggleAndRepositionTask(tasks, idx) {
     await Promise.all(controllers.map((c) => c.setAuthUser(userId)));
   }
 
-  async function initDailyAuth() {
+  function initDailyAuth() {
+    if (window.oneweekAuth?.subscribe) {
+      window.oneweekAuth.subscribe((session) => {
+        void applyAuthSession(session);
+      });
+      return;
+    }
     if (!supabase) {
       console.error("Supabase client is not initialized for daily tasks.");
       return;
     }
-
-    const { data } = await supabase.auth.getSession();
-    await applyAuthSession(data?.session);
-
-    supabase.auth.onAuthStateChange((_event, session) => {
-      void applyAuthSession(session);
-    });
+    void (async () => {
+      const { data } = await supabase.auth.getSession();
+      await applyAuthSession(data?.session);
+      supabase.auth.onAuthStateChange((_event, session) => {
+        void applyAuthSession(session);
+      });
+    })();
   }
 
-  void initDailyAuth();
+  initDailyAuth();
 })();
 
 (() => {
@@ -3848,19 +5519,30 @@ function toggleAndRepositionTask(tasks, idx) {
 
   function updateDayOfMonthLabels() {
     const weekStart = getVisibleWeekStartDate();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const onThisWeek = Number(window.__weekOffset || 0) === 0;
 
     const dayRects = document.querySelectorAll(".day-rect[data-day]");
     dayRects.forEach((rect) => {
       const dayName = rect.dataset.day;
       const dayIndex = weekdayToIndex[dayName];
-      if (dayIndex == null) return; // skip "Next week"
+      if (dayIndex == null) {
+        rect.classList.remove("is-today");
+        return; // skip "Next week"
+      }
 
       const date = new Date(weekStart);
       date.setDate(weekStart.getDate() + dayIndex);
+      date.setHours(0, 0, 0, 0);
 
       const label = rect.querySelector(".day-label");
       if (!label) return;
       label.textContent = `${dayName}, ${date.getDate()}`;
+      rect.classList.toggle(
+        "is-today",
+        onThisWeek && date.getTime() === today.getTime()
+      );
     });
   }
 
@@ -3985,10 +5667,18 @@ function toggleAndRepositionTask(tasks, idx) {
       const dateLabel = formatWeekLabel(monday);
       const li = document.createElement("li");
 
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "weeks-list-btn";
+      if (offset === currentOffset) {
+        btn.classList.add("week-active");
+        btn.setAttribute("aria-current", "true");
+      }
+
       const dates = document.createElement("span");
       dates.className = "weeks-list-dates";
       dates.textContent = dateLabel;
-      li.appendChild(dates);
+      btn.appendChild(dates);
 
       let tagText = null;
       if (offset === 0) tagText = "now";
@@ -3999,11 +5689,11 @@ function toggleAndRepositionTask(tasks, idx) {
         const tag = document.createElement("span");
         tag.className = "weeks-list-tag";
         tag.textContent = tagText;
-        li.appendChild(tag);
+        btn.appendChild(tag);
       }
 
-      if (offset === currentOffset) li.classList.add("week-active");
-      li.addEventListener("click", () => setWeekOffset(offset));
+      btn.addEventListener("click", () => setWeekOffset(offset));
+      li.appendChild(btn);
       weeksList.appendChild(li);
     }
   }
@@ -4021,48 +5711,6 @@ function toggleAndRepositionTask(tasks, idx) {
   scheduleNextUpdate();
   renderWeeksList();
 })();
-
-async function signUp() {
-  const supabase = window.supabaseClient;
-  if (!supabase) {
-    console.error("Supabase client missing.");
-    return { ok: false, error: "Auth client not initialized." };
-  }
-
-  const email = document.getElementById("email").value;
-  const password = document.getElementById("password").value;
-
-  const { error } = await supabase.auth.signUp({
-    email,
-    password,
-  });
-
-  if (error) {
-    return { ok: false, error: error.message || "Sign up failed." };
-  }
-  return { ok: true };
-}
-
-async function login() {
-  const supabase = window.supabaseClient;
-  if (!supabase) {
-    console.error("Supabase client missing.");
-    return { ok: false, error: "Auth client not initialized." };
-  }
-
-  const email = document.getElementById("email").value;
-  const password = document.getElementById("password").value;
-
-  const { error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  });
-
-  if (error) {
-    return { ok: false, error: error.message || "Login failed." };
-  }
-  return { ok: true };
-}
 
 async function logout() {
   const supabase = window.supabaseClient;
@@ -4089,6 +5737,7 @@ async function logout() {
     console.error("Sign out failed:", error);
     return { ok: false, error: "Logout failed." };
   }
+  clearAllTasksCaches();
   return { ok: true };
 }
 
@@ -4096,8 +5745,7 @@ window.addEventListener("load", () => {
   const overlay = document.getElementById("auth-overlay");
   const authTriggers = document.querySelectorAll("#auth-trigger, #auth-trigger-mobile");
   const closeBtn = document.getElementById("auth-close");
-  const signupBtn = document.getElementById("auth-signup");
-  const loginBtn = document.getElementById("auth-login");
+  const openSignInBtn = document.getElementById("auth-open-signin");
   const logoutBtn = document.getElementById("logout-button");
   const authStatusEl = document.getElementById("auth-status");
   const authMessageEl = document.getElementById("auth-message");
@@ -4110,8 +5758,7 @@ window.addEventListener("load", () => {
   }
 
   function setAuthPending(isPending) {
-    if (signupBtn) signupBtn.disabled = isPending;
-    if (loginBtn) loginBtn.disabled = isPending;
+    if (openSignInBtn) openSignInBtn.disabled = isPending;
     if (logoutBtn) logoutBtn.disabled = isPending;
   }
 
@@ -4158,7 +5805,11 @@ window.addEventListener("load", () => {
     }
   }
 
-  if (window.supabaseClient) {
+  if (window.oneweekAuth?.subscribe) {
+    window.oneweekAuth.subscribe(() => {
+      void refreshAuthStatus();
+    });
+  } else if (window.supabaseClient) {
     window.supabaseClient.auth.onAuthStateChange(() => {
       void refreshAuthStatus();
     });
@@ -4372,14 +6023,53 @@ window.addEventListener("load", () => {
   }
 
   const sidebar = document.getElementById("sidebar");
+  let authPopupReturnFocus = null;
+
+  function getSidebarFocusables() {
+    if (!sidebar || sidebar.hidden) return [];
+    return [...sidebar.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )].filter((el) => el.offsetParent !== null);
+  }
+
+  function trapSidebarFocus(e) {
+    if (!sidebar || sidebar.hidden) return;
+    if (e.key !== "Tab") return;
+    const focusables = getSidebarFocusables();
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  function onSidebarKeydown(e) {
+    if (!sidebar || sidebar.hidden) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeAuthPopup();
+    }
+  }
 
   function openAuthPopup() {
     if (!overlay || !sidebar) return;
+    authPopupReturnFocus = document.activeElement;
     overlay.hidden = false;
     sidebar.hidden = false;
+    sidebar.setAttribute("aria-modal", "true");
+    sidebar.setAttribute("role", "dialog");
     setAuthMessage("");
     syncThemeSelect();
     void refreshAuthStatus();
+    const focusables = getSidebarFocusables();
+    const toFocus =
+      closeBtn && focusables.includes(closeBtn) ? closeBtn : focusables[0];
+    if (toFocus) toFocus.focus();
   }
 
   window.oneweekOpenAuth = openAuthPopup;
@@ -4388,6 +6078,11 @@ window.addEventListener("load", () => {
     if (!overlay || !sidebar) return;
     overlay.hidden = true;
     sidebar.hidden = true;
+    sidebar.removeAttribute("aria-modal");
+    sidebar.removeAttribute("role");
+    const returnTo = authPopupReturnFocus;
+    authPopupReturnFocus = null;
+    if (returnTo && typeof returnTo.focus === "function") returnTo.focus();
   }
 
   authTriggers.forEach((btn) => {
@@ -4399,19 +6094,15 @@ window.addEventListener("load", () => {
     overlay.addEventListener("click", closeAuthPopup);
   }
 
-  if (signupBtn) {
-    signupBtn.addEventListener("click", async () => {
-      await runAuthAction(
-        "Signing up...",
-        signUp,
-        "Sign up successful. Check your email for confirmation."
-      );
-    });
-  }
+  document.addEventListener("keydown", onSidebarKeydown);
+  if (sidebar) sidebar.addEventListener("keydown", trapSidebarFocus);
 
-  if (loginBtn) {
-    loginBtn.addEventListener("click", async () => {
-      await runAuthAction("Logging in...", login, "Logged in.");
+  if (openSignInBtn) {
+    openSignInBtn.addEventListener("click", () => {
+      closeAuthPopup();
+      if (typeof window.oneweekOpenGuestAuth === "function") {
+        window.oneweekOpenGuestAuth();
+      }
     });
   }
 
@@ -4452,6 +6143,306 @@ window.addEventListener("load", () => {
   if (themeInputText) themeInputText.addEventListener("input", previewCustomTheme);
   if (themeInputBg) themeInputBg.addEventListener("input", previewCustomTheme);
   if (themeFontSelect) themeFontSelect.addEventListener("change", previewCustomTheme);
+
+  (function setupThemeColorPicker() {
+    const picker = document.getElementById("theme-color-picker");
+    const svEl = document.getElementById("theme-color-sv");
+    const svCursor = document.getElementById("theme-color-sv-cursor");
+    const hueEl = document.getElementById("theme-color-hue");
+    const hueCursor = document.getElementById("theme-color-hue-cursor");
+    const eyedropperBtn = document.getElementById("theme-color-eyedropper");
+    const swatches = document.querySelectorAll(".theme-color-swatch[data-theme-color-for]");
+    if (!picker || !svEl || !hueEl || !themeInputText || !themeInputBg) return;
+
+    const hsv = { h: 0, s: 0, v: 1 };
+    let activeInput = null;
+    let dragging = null;
+
+    function clamp(n, min, max) {
+      return Math.min(max, Math.max(min, n));
+    }
+
+    function hexToRgb(hex) {
+      const n = themeApi()?.normalizeHexColor(hex);
+      if (!n) return null;
+      return {
+        r: parseInt(n.slice(1, 3), 16),
+        g: parseInt(n.slice(3, 5), 16),
+        b: parseInt(n.slice(5, 7), 16),
+      };
+    }
+
+    function rgbToHex(r, g, b) {
+      const to = (c) => clamp(Math.round(c), 0, 255).toString(16).padStart(2, "0");
+      return `#${to(r)}${to(g)}${to(b)}`;
+    }
+
+    function rgbToHsv(r, g, b) {
+      r /= 255;
+      g /= 255;
+      b /= 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const d = max - min;
+      let h = 0;
+      if (d !== 0) {
+        if (max === r) h = ((g - b) / d) % 6;
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h *= 60;
+        if (h < 0) h += 360;
+      }
+      return { h, s: max === 0 ? 0 : d / max, v: max };
+    }
+
+    function hsvToRgb(h, s, v) {
+      const c = v * s;
+      const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+      const m = v - c;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      if (h < 60) {
+        r = c;
+        g = x;
+      } else if (h < 120) {
+        r = x;
+        g = c;
+      } else if (h < 180) {
+        g = c;
+        b = x;
+      } else if (h < 240) {
+        g = x;
+        b = c;
+      } else if (h < 300) {
+        r = x;
+        b = c;
+      } else {
+        r = c;
+        b = x;
+      }
+      return {
+        r: (r + m) * 255,
+        g: (g + m) * 255,
+        b: (b + m) * 255,
+      };
+    }
+
+    function hsvToHex(h, s, v) {
+      const rgb = hsvToRgb(h, s, v);
+      return rgbToHex(rgb.r, rgb.g, rgb.b);
+    }
+
+    function hueHex(h) {
+      return hsvToHex(h, 1, 1);
+    }
+
+    function inputForSwatch(swatch) {
+      return document.getElementById(swatch.dataset.themeColorFor || "");
+    }
+
+    function syncThemeColorSwatches() {
+      swatches.forEach((swatch) => {
+        const input = inputForSwatch(swatch);
+        const hex = themeApi()?.normalizeHexColor(input?.value || "");
+        swatch.style.background = hex || "transparent";
+      });
+    }
+
+    function paintPicker() {
+      picker.style.setProperty("--theme-picker-hue", hueHex(hsv.h));
+      const svRect = svEl.getBoundingClientRect();
+      const hueRect = hueEl.getBoundingClientRect();
+      if (svCursor && svRect.width && svRect.height) {
+        svCursor.style.left = `${hsv.s * 100}%`;
+        svCursor.style.top = `${(1 - hsv.v) * 100}%`;
+        svCursor.style.background = hsvToHex(hsv.h, hsv.s, hsv.v);
+      }
+      if (hueCursor && hueRect.width) {
+        hueCursor.style.left = `${(hsv.h / 360) * 100}%`;
+      }
+    }
+
+    function applyHsvToInput() {
+      if (!activeInput) return;
+      activeInput.value = hsvToHex(hsv.h, hsv.s, hsv.v);
+      activeInput.dispatchEvent(new Event("input", { bubbles: true }));
+      paintPicker();
+    }
+
+    function loadFromInput(input) {
+      const rgb = hexToRgb(input?.value || "") || { r: 255, g: 255, b: 255 };
+      const next = rgbToHsv(rgb.r, rgb.g, rgb.b);
+      hsv.h = next.h;
+      hsv.s = next.s;
+      hsv.v = next.v;
+      paintPicker();
+    }
+
+    function positionPicker(anchor) {
+      const margin = 8;
+      const rect = anchor.getBoundingClientRect();
+      picker.hidden = false;
+      const pop = picker.getBoundingClientRect();
+      let top = rect.bottom + 6;
+      let left = rect.left;
+      if (top + pop.height > window.innerHeight - margin) {
+        top = Math.max(margin, rect.top - pop.height - 6);
+      }
+      if (left + pop.width > window.innerWidth - margin) {
+        left = Math.max(margin, window.innerWidth - pop.width - margin);
+      }
+      picker.style.top = `${top}px`;
+      picker.style.left = `${left}px`;
+    }
+
+    function closePicker() {
+      if (picker.hidden) return;
+      picker.hidden = true;
+      swatches.forEach((s) => s.setAttribute("aria-expanded", "false"));
+      activeInput = null;
+      dragging = null;
+    }
+
+    function openPicker(swatch) {
+      const input = inputForSwatch(swatch);
+      if (!input) return;
+      if (activeInput === input && !picker.hidden) {
+        closePicker();
+        return;
+      }
+      activeInput = input;
+      swatches.forEach((s) =>
+        s.setAttribute("aria-expanded", String(s === swatch))
+      );
+      loadFromInput(input);
+      positionPicker(swatch);
+    }
+
+    function svFromPointer(e) {
+      const rect = svEl.getBoundingClientRect();
+      hsv.s = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+      hsv.v = clamp(1 - (e.clientY - rect.top) / rect.height, 0, 1);
+      applyHsvToInput();
+    }
+
+    function hueFromPointer(e) {
+      const rect = hueEl.getBoundingClientRect();
+      hsv.h = clamp(((e.clientX - rect.left) / rect.width) * 360, 0, 359.99);
+      applyHsvToInput();
+    }
+
+    svEl.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      svEl.setPointerCapture(e.pointerId);
+      dragging = "sv";
+      svFromPointer(e);
+    });
+    hueEl.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      hueEl.setPointerCapture(e.pointerId);
+      dragging = "hue";
+      hueFromPointer(e);
+    });
+    const onPointerMove = (e) => {
+      if (dragging === "sv") svFromPointer(e);
+      else if (dragging === "hue") hueFromPointer(e);
+    };
+    const onPointerUp = () => {
+      dragging = null;
+    };
+    svEl.addEventListener("pointermove", onPointerMove);
+    hueEl.addEventListener("pointermove", onPointerMove);
+    svEl.addEventListener("pointerup", onPointerUp);
+    hueEl.addEventListener("pointerup", onPointerUp);
+    svEl.addEventListener("pointercancel", onPointerUp);
+    hueEl.addEventListener("pointercancel", onPointerUp);
+
+    swatches.forEach((swatch) => {
+      swatch.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openPicker(swatch);
+      });
+    });
+
+    themeInputText.addEventListener("input", () => {
+      syncThemeColorSwatches();
+      if (activeInput === themeInputText && !picker.hidden && !dragging) {
+        loadFromInput(themeInputText);
+      }
+    });
+    themeInputBg.addEventListener("input", () => {
+      syncThemeColorSwatches();
+      if (activeInput === themeInputBg && !picker.hidden && !dragging) {
+        loadFromInput(themeInputBg);
+      }
+    });
+
+    if (eyedropperBtn) {
+      if (!window.EyeDropper) {
+        eyedropperBtn.hidden = true;
+      } else {
+        eyedropperBtn.addEventListener("click", async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            const result = await new window.EyeDropper().open();
+            const hex = themeApi()?.normalizeHexColor(result?.sRGBHex || "");
+            if (!hex || !activeInput) return;
+            activeInput.value = hex;
+            activeInput.dispatchEvent(new Event("input", { bubbles: true }));
+            loadFromInput(activeInput);
+          } catch (_) {
+            /* user cancelled */
+          }
+        });
+      }
+    }
+
+    document.addEventListener("mousedown", (e) => {
+      if (picker.hidden) return;
+      if (picker.contains(e.target)) return;
+      if (e.target.closest?.(".theme-color-swatch")) return;
+      closePicker();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closePicker();
+    });
+    window.addEventListener("resize", closePicker);
+
+    const originalFill = fillThemeFormFromTheme;
+    fillThemeFormFromTheme = function (theme) {
+      originalFill(theme);
+      syncThemeColorSwatches();
+      if (!picker.hidden && activeInput) loadFromInput(activeInput);
+    };
+    const originalSync = syncThemeInputs;
+    syncThemeInputs = function () {
+      originalSync();
+      syncThemeColorSwatches();
+      if (!picker.hidden && activeInput) loadFromInput(activeInput);
+    };
+
+    const sidebarEl = document.getElementById("sidebar");
+    const fieldsObserver = new MutationObserver(() => {
+      if (themeCustomFields?.hidden || sidebarEl?.hidden) closePicker();
+    });
+    if (themeCustomFields) {
+      fieldsObserver.observe(themeCustomFields, {
+        attributes: true,
+        attributeFilter: ["hidden"],
+      });
+    }
+    if (sidebarEl) {
+      fieldsObserver.observe(sidebarEl, {
+        attributes: true,
+        attributeFilter: ["hidden"],
+      });
+    }
+
+    syncThemeColorSwatches();
+  })();
 
   if (themeApplyBtn) {
     themeApplyBtn.addEventListener("click", () => {
@@ -4661,23 +6652,22 @@ window.addEventListener("load", () => {
 
 /**
  * Guest auth modal — full-screen blurred overlay shown when the user has no
- * Supabase session. One submit button does both login and signup:
- *
- *   1. Try sign-in. If it succeeds, the auth state change closes the modal.
- *   2. If sign-in fails with "invalid credentials" / "user not found" /
- *      "email not confirmed", try sign-up. On success, show the
- *      "confirm your email" message.
- *   3. Other errors surface as red text under the form.
+ * Supabase session. Separate Sign in and Create account actions; wrong
+ * password never triggers an automatic sign-up attempt.
  */
 (function setupGuestAuthModal() {
   const backdrop = document.getElementById("guest-auth-backdrop");
   const form = document.getElementById("guest-auth-form");
   const emailInput = document.getElementById("guest-auth-email");
   const passwordInput = document.getElementById("guest-auth-password");
-  const submitBtn = document.getElementById("guest-auth-submit");
+  const signInBtn = document.getElementById("guest-auth-signin");
+  const signUpBtn = document.getElementById("guest-auth-signup");
   const messageEl = document.getElementById("guest-auth-message");
   const messageSlot = document.getElementById("guest-auth-message-slot");
-  if (!backdrop || !form || !emailInput || !passwordInput || !submitBtn) return;
+  const appMain = document.getElementById("app-main");
+  if (!backdrop || !form || !emailInput || !passwordInput || !signInBtn || !signUpBtn) {
+    return;
+  }
 
   const supabase = window.supabaseClient;
   if (!supabase) return;
@@ -4686,45 +6676,88 @@ window.addEventListener("load", () => {
     if (!messageEl) return;
     messageEl.textContent = text || "";
     messageEl.classList.toggle("is-error", !!isError && !!text);
-    // The slot animates open/closed via CSS (`grid-template-rows`). We keep
-    // the text in the DOM (instead of using `hidden`) so the modal smoothly
-    // grows when a new message comes in instead of snapping.
     if (messageSlot) messageSlot.classList.toggle("is-shown", !!text);
   }
 
   function setPending(isPending) {
-    submitBtn.disabled = isPending;
+    signInBtn.disabled = isPending;
+    signUpBtn.disabled = isPending;
     emailInput.disabled = isPending;
     passwordInput.disabled = isPending;
-    submitBtn.textContent = isPending ? "..." : "Sign in / Sign up";
+    signInBtn.textContent = isPending ? "..." : "Sign in";
+    signUpBtn.textContent = isPending ? "..." : "Create account";
+  }
+
+  function getGuestFocusables() {
+    return [emailInput, passwordInput, signInBtn, signUpBtn].filter(
+      (el) => el && !el.disabled
+    );
+  }
+
+  /** Block task editing while guest auth is open; keep header menu reachable. */
+  function setGuestBlockingInert(inert) {
+    const tasksField = document.getElementById("tasks-field");
+    const weekPanel = document.querySelector(".week-panel");
+    const weekNav = document.querySelector(".layout-header-week");
+    const headerRight = document.querySelector(".layout-header-right");
+    if (tasksField) tasksField.inert = !!inert;
+    if (weekPanel) weekPanel.inert = !!inert;
+    if (weekNav) weekNav.inert = !!inert;
+    if (headerRight) headerRight.inert = !!inert;
+    if (appMain) appMain.removeAttribute("inert");
+  }
+
+  function trapGuestFocus(e) {
+    if (backdrop.hidden) return;
+    if (e.key !== "Tab") return;
+    const focusables = getGuestFocusables();
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    } else if (!backdrop.contains(document.activeElement)) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  function onGuestKeydown(e) {
+    if (backdrop.hidden) return;
+    // Blocking auth: Escape must not dismiss. Still swallow so it doesn't
+    // hit other UI behind the inert main.
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+    }
   }
 
   function show() {
     if (!backdrop.hidden) return;
     backdrop.hidden = false;
-    // Give the browser a tick to mount, then focus the email field.
+    setGuestBlockingInert(true);
     requestAnimationFrame(() => emailInput.focus({ preventScroll: true }));
   }
+
+  window.oneweekOpenGuestAuth = () => {
+    if (!backdrop.hidden) {
+      requestAnimationFrame(() => emailInput.focus({ preventScroll: true }));
+      return;
+    }
+    show();
+  };
 
   function hide() {
     if (backdrop.hidden) return;
     backdrop.hidden = true;
+    setGuestBlockingInert(false);
     setMessage("");
     setPending(false);
     form.reset();
-  }
-
-  /** Did sign-in fail specifically because no account exists with this email
-   *  (or wrong password — Supabase intentionally collapses both into the same
-   *  message to prevent user enumeration)? In either case it's safe to try a
-   *  sign-up: if the account already exists, the sign-up will report it. */
-  function looksLikeMissingAccount(error) {
-    const msg = String(error?.message || error || "").toLowerCase();
-    return (
-      msg.includes("invalid login") ||
-      msg.includes("invalid credentials") ||
-      msg.includes("user not found")
-    );
   }
 
   function looksLikeUnconfirmedEmail(error) {
@@ -4739,97 +6772,98 @@ window.addEventListener("load", () => {
     );
   }
 
-  async function handleSubmit(e) {
-    e.preventDefault();
+  function readCredentials() {
     const email = emailInput.value.trim();
     const password = passwordInput.value;
     if (!email || !password) {
       setMessage("Enter your email and password.", true);
-      return;
+      return null;
     }
+    return { email, password };
+  }
+
+  async function handleSignIn(e) {
+    e.preventDefault();
+    const creds = readCredentials();
+    if (!creds) return;
 
     setPending(true);
     setMessage("Signing in...");
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { error: signInError } = await supabase.auth.signInWithPassword(creds);
 
     if (!signInError) {
-      // onAuthStateChange will hide the modal.
       setMessage("");
       setPending(false);
       return;
     }
 
-    // Account exists but the user hasn't clicked the confirmation link yet —
-    // re-send the email (best-effort) and surface a clear message.
     if (looksLikeUnconfirmedEmail(signInError)) {
       try {
-        await supabase.auth.resend({ type: "signup", email });
+        await supabase.auth.resend({ type: "signup", email: creds.email });
       } catch (_) {
-        /* best-effort resend — original message still tells the user what to do */
+        /* best-effort */
       }
       setPending(false);
-      showConfirmEmailMessage(email);
+      showConfirmEmailMessage(creds.email);
       return;
     }
 
-    if (!looksLikeMissingAccount(signInError)) {
-      setPending(false);
-      setMessage(signInError.message || "Couldn't sign in.", true);
-      return;
-    }
+    setPending(false);
+    setMessage(signInError.message || "Wrong email or password.", true);
+  }
 
-    // Either no such account, or correct email + wrong password. Try sign-up:
-    // if Supabase responds "already registered", we know it was the password.
+  async function handleSignUp() {
+    const creds = readCredentials();
+    if (!creds) return;
+
+    setPending(true);
     setMessage("Creating account...");
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-    });
+
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp(creds);
 
     setPending(false);
 
     if (signUpError) {
-      const msg = String(signUpError.message || "").toLowerCase();
-      if (msg.includes("already registered") || msg.includes("already been registered")) {
-        setMessage("Wrong password for this email.", true);
-      } else {
-        setMessage(signUpError.message || "Couldn't create account.", true);
-      }
+      setMessage(signUpError.message || "Couldn't create account.", true);
       return;
     }
 
-    // With email confirmation OFF, Supabase returns a session immediately and
-    // onAuthStateChange closes the modal. With confirmation ON (the current
-    // setup), there's no session yet — tell the user to check their inbox.
     if (signUpData?.session) {
       setMessage("");
       return;
     }
-    showConfirmEmailMessage(email);
+    showConfirmEmailMessage(creds.email);
   }
 
-  form.addEventListener("submit", handleSubmit);
+  form.addEventListener("submit", handleSignIn);
+  signUpBtn.addEventListener("click", () => {
+    void handleSignUp();
+  });
+  backdrop.addEventListener("keydown", trapGuestFocus);
+  document.addEventListener("keydown", onGuestKeydown, true);
 
   async function applySession(session) {
     if (session?.user) hide();
     else show();
   }
 
-  (async () => {
-    try {
-      const { data } = await supabase.auth.getSession();
-      await applySession(data?.session ?? null);
-    } catch (err) {
-      console.error("Guest auth init failed:", err);
-      show();
-    }
-  })();
-
-  supabase.auth.onAuthStateChange((_event, session) => {
-    void applySession(session);
-  });
+  if (window.oneweekAuth?.subscribe) {
+    window.oneweekAuth.subscribe((session) => {
+      void applySession(session);
+    });
+  } else {
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        await applySession(data?.session ?? null);
+      } catch (err) {
+        console.error("Guest auth init failed:", err);
+        show();
+      }
+    })();
+    supabase.auth.onAuthStateChange((_event, session) => {
+      void applySession(session);
+    });
+  }
 })();

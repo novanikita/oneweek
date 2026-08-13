@@ -6,4 +6,28 @@
   --color-border: color-mix(in srgb, var(--color-text) 20%, transparent);
   /* Soft outer glow on day cells + tasks field (hover). */
   --shadow-day-hover: 0 0 0.3em 0.07em color-mix(in srgb, var(--color-text) 22%, transparent);
+
+  /* Task highlight palette. Stored value is always the light hex; dark
+     themes remap the same slots to muted night versions of the same hues. */
+  --task-hl-ebebeb: #ebebeb;
+  --task-hl-f0e2d3: #f0e2d3;
+  --task-hl-fbe6cd: #fbe6cd;
+  --task-hl-f8efbf: #f8efbf;
+  --task-hl-e2ece0: #e2ece0;
+  --task-hl-dde8f1: #dde8f1;
+  --task-hl-e7dfee: #e7dfee;
+  --task-hl-f3d8e1: #f3d8e1;
+  --task-hl-f8dada: #f8dada;
+}
+
+html[data-task-highlights="dark"] {
+  --task-hl-ebebeb: #3e3e3e;
+  --task-hl-f0e2d3: #4a4038;
+  --task-hl-fbe6cd: #4e4034;
+  --task-hl-f8efbf: #4a462e;
+  --task-hl-e2ece0: #38463e;
+  --task-hl-dde8f1: #364450;
+  --task-hl-e7dfee: #403a4c;
+  --task-hl-f3d8e1: #4c3a42;
+  --task-hl-f8dada: #4c3838;
 }

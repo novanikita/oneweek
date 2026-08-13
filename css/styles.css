@@ -399,6 +399,11 @@ h1 {
   -webkit-mask: url("../bar-icon.svg") center / contain no-repeat;
 }
 
+.icon-themed.icon-themed-plus {
+  mask: url("../plus.svg") center / contain no-repeat;
+  -webkit-mask: url("../plus.svg") center / contain no-repeat;
+}
+
 .icon-themed.icon-themed-arrow {
   mask: url("../arrow.svg") center / contain no-repeat;
   -webkit-mask: url("../arrow.svg") center / contain no-repeat;
@@ -409,9 +414,9 @@ h1 {
   -webkit-mask: url("../cross.svg") center / contain no-repeat;
 }
 
-.icon-themed.icon-themed-plus {
-  mask: url("../plus.svg") center / contain no-repeat;
-  -webkit-mask: url("../plus.svg") center / contain no-repeat;
+.icon-themed.icon-themed-eyedropper {
+  mask: url("../eyedropper.svg") center / contain no-repeat;
+  -webkit-mask: url("../eyedropper.svg") center / contain no-repeat;
 }
 
 .week-nav-btn--next .icon-themed-arrow {
@@ -422,7 +427,7 @@ h1 {
 .connection-banner {
   position: fixed;
   left: 50%;
-  bottom: 1.25em;
+  bottom: calc(1.25em + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   z-index: 200;
   max-width: calc(100vw - 2em);
@@ -443,6 +448,34 @@ h1 {
   display: block;
   opacity: 0;
   transform: translate(-50%, 0.5em);
+  pointer-events: none;
+}
+
+.undo-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(3.25em + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 199;
+  max-width: calc(100vw - 2em);
+  padding: 0.45em 0.9em;
+  border-radius: 999em;
+  background: color-mix(in oklab, var(--color-background) 92%, var(--color-text));
+  color: var(--color-text);
+  border: 0.07em solid var(--color-border);
+  font-size: 0.82em;
+  line-height: 1.2;
+  text-align: center;
+  box-shadow: 0 0.2em 0.6em rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.undo-hint[hidden] {
+  display: block;
+  opacity: 0;
+  transform: translate(-50%, 0.35em);
   pointer-events: none;
 }
 
@@ -720,7 +753,8 @@ h1 {
   cursor: pointer;
   -webkit-appearance: none;
   appearance: none;
-  padding: 0.28em 2.65em 0.28em 0.55em;
+  padding: 0.55em 2.65em 0.55em 0.7em;
+  min-height: 2.6em;
 }
 
 .sidebar-input {
@@ -755,6 +789,123 @@ h1 {
   display: none;
 }
 
+.theme-color-field {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4em;
+  min-width: 0;
+}
+
+.theme-color-swatch {
+  flex: 0 0 auto;
+  width: 2.1em;
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.4em;
+  padding: 0;
+  cursor: pointer;
+  background: var(--color-background);
+}
+
+.theme-color-swatch[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.theme-color-picker {
+  position: fixed;
+  z-index: 140;
+  width: 14.5em;
+  padding: 0.55em;
+  background: var(--color-background);
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.55em;
+  box-shadow: 0 0.4em 1.2em color-mix(in srgb, var(--color-text) 18%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55em;
+}
+
+.theme-color-picker[hidden] {
+  display: none;
+}
+
+.theme-color-sv {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1.15 / 1;
+  border-radius: 0.4em;
+  cursor: crosshair;
+  touch-action: none;
+  background:
+    linear-gradient(to bottom, transparent, #000),
+    linear-gradient(to right, #fff, var(--theme-picker-hue, #f00));
+}
+
+.theme-color-sv-cursor,
+.theme-color-hue-cursor {
+  position: absolute;
+  width: 0.85em;
+  height: 0.85em;
+  border: 0.12em solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.06em color-mix(in srgb, #000 45%, transparent);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+}
+
+.theme-color-hue-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
+}
+
+.theme-color-eyedropper {
+  flex: 0 0 auto;
+  width: 1.5em;
+  height: 1.5em;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+}
+
+.theme-color-eyedropper:hover {
+  opacity: 1;
+}
+
+.theme-color-eyedropper[hidden] {
+  display: none;
+}
+
+.theme-color-hue {
+  position: relative;
+  flex: 1 1 auto;
+  height: 0.85em;
+  border-radius: 999em;
+  cursor: pointer;
+  touch-action: none;
+  background: linear-gradient(
+    to right,
+    #f00 0%,
+    #ff0 17%,
+    #0f0 33%,
+    #0ff 50%,
+    #00f 67%,
+    #f0f 83%,
+    #f00 100%
+  );
+}
+
+.theme-color-hue-cursor {
+  top: 50%;
+  background: var(--theme-picker-hue, #f00);
+}
+
 .weeks-list {
   list-style: none;
   margin-block: 0;
@@ -766,6 +917,12 @@ h1 {
 }
 
 .weeks-list li {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.weeks-list-btn {
   position: relative;
   z-index: 0;
   display: flex;
@@ -773,10 +930,42 @@ h1 {
   justify-content: space-between;
   gap: 0.6em;
   min-width: 0;
+  width: 100%;
   padding-block: 0.38em;
   padding-inline: var(--weeks-item-bleed, 0.5em);
-  cursor: pointer;
+  border: 0;
   border-radius: 0.35em;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.weeks-list-btn::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.weeks-list-btn:hover::before {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+}
+
+.weeks-list-btn.week-active {
+  font-weight: 600;
+}
+
+.weeks-list-btn.week-active .weeks-list-tag {
+  opacity: 0.55;
+}
+
+.weeks-list-btn:focus-visible {
+  outline: 0.12em solid var(--color-text);
+  outline-offset: 0.08em;
 }
 
 .weeks-list-dates {
@@ -790,27 +979,6 @@ h1 {
   white-space: nowrap;
 }
 
-.weeks-list li.week-active .weeks-list-tag {
-  opacity: 0.55;
-}
-
-.weeks-list li::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  border-radius: inherit;
-  background: transparent;
-}
-
-.weeks-list li:hover::before {
-  background: color-mix(in srgb, var(--color-text) 4%, transparent);
-}
-
-.weeks-list li.week-active {
-  font-weight: 600;
-}
-
 .sidebar-actions {
   display: flex;
   gap: 0.5em;
@@ -818,7 +986,8 @@ h1 {
   margin-top: 0.2em;
 }
 
-#theme-delete-actions[hidden] {
+#theme-delete-actions[hidden],
+#sidebar-workspace-delete-actions[hidden] {
   display: none !important;
 }
 
@@ -1112,6 +1281,17 @@ h1 {
   opacity: 0.55;
 }
 
+.guest-auth-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45em;
+  margin-top: 0.25em;
+}
+
+.guest-auth-submit-secondary {
+  opacity: 0.92;
+}
+
 /* The slot collapses to zero height when there's no message, so the popup
    has no dead space under the submit button. When a message appears, the
    slot expands smoothly via `grid-template-rows: 0fr → 1fr`, and the text
@@ -1271,8 +1451,7 @@ h1 {
   }
 
   .layout-header {
-    /* Vertical padding is part of --header-bar-height; horizontal padding is
-       a separate inset that does not affect the row height. */
+    /* Horizontal inset only; safe-area lives on the fixed header bar height. */
     padding: 0 0.75em;
   }
 
@@ -1302,12 +1481,13 @@ h1 {
   }
 
   .panel-titlebar.layout-header {
-    /* Header is fixed at exactly --header-bar-height; horizontal padding is
-       set separately on .layout-header so it cannot inflate this height. */
-    --header-bar-height: 3em;
+    --header-content-height: 3em;
+    --header-safe-top: env(safe-area-inset-top, 0px);
+    --header-bar-height: calc(var(--header-content-height) + var(--header-safe-top));
     height: var(--header-bar-height);
     min-height: var(--header-bar-height);
     max-height: var(--header-bar-height);
+    padding-top: var(--header-safe-top);
   }
 
   /* Lock every header column to the same height AND center its content
@@ -1317,9 +1497,9 @@ h1 {
   .layout-header-menu,
   .layout-header-week,
   .layout-header-right {
-    height: var(--header-bar-height);
-    min-height: var(--header-bar-height);
-    max-height: var(--header-bar-height);
+    height: var(--header-content-height);
+    min-height: var(--header-content-height);
+    max-height: var(--header-content-height);
     display: flex;
     align-items: center;
     overflow: hidden;
@@ -1371,7 +1551,7 @@ h1 {
   }
 
   .panel.tasks-panel {
-    padding: 0 0.75em 0.75em;
+    padding: 0 0.75em calc(0.75em + env(safe-area-inset-bottom, 0px));
     min-height: 0;
     gap: 0;
   }
@@ -1469,8 +1649,16 @@ h1 {
     max-height: var(--task-line);
   }
 
+  /* Focus must win over the single-line max-height, otherwise wrapped text
+     can't grow scrollHeight and never flips to .task-row-multiline. */
+  .task-row:not(.task-row-multiline) .task-text:focus {
+    max-height: none;
+  }
+
+  /* No gap between rows: vertical rhythm lives in --task-pad-y (same idea as
+     desktop). Keeps colored highlight plates taller and edge-to-edge. */
   .task-row + .task-row {
-    margin-top: 0.5em;
+    margin-top: 0;
   }
 
 
@@ -1482,10 +1670,6 @@ h1 {
     border-top-width: 0;
     border-bottom-left-radius: var(--radius-shell);
     border-bottom-right-radius: var(--radius-shell);
-  }
-
-  body {
-    padding-bottom: env(safe-area-inset-bottom);
   }
 }
 
@@ -1621,6 +1805,12 @@ h1 {
    end up baked into the HTML5 drag-image ghost. */
 .task-row.task-row-dragging .task-row-actions {
   display: none;
+}
+
+/* Portaled mobile actions live under body, so the rule above misses them —
+   they would otherwise sit over the list and swallow the drop at the end. */
+body:has(.task-row-dragging) > .task-row-actions.is-mobile-portaled {
+  display: none !important;
 }
 
 .task-checkbox {
@@ -1791,6 +1981,11 @@ h1 {
   border-color: color-mix(in srgb, var(--color-text) 45%, transparent);
 }
 
+.task-color-swatch:focus-visible {
+  outline: 0.12em solid var(--color-text);
+  outline-offset: 0.12em;
+}
+
 .task-color-swatch-active {
   border-color: var(--color-text);
   border-width: 0.14em;
@@ -1811,8 +2006,10 @@ h1 {
   opacity: 0.7;
 }
 
-/* Colored task row: pastel background with forced dark foreground for readability across themes. */
+/* Colored task row: highlight fill comes from --task-hl (light/dark palette).
+   Light themes keep a dark foreground so pastels stay readable. */
 .task-row[data-color] {
+  background: var(--task-hl);
   color: #1a1a1a;
   border-color: transparent;
 }
@@ -1855,6 +2052,50 @@ h1 {
 
 .task-row[data-color] .task-color-dot {
   border-color: #1a1a1a;
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] {
+  color: #f0f2f4;
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] .task-text {
+  color: #f0f2f4;
+  caret-color: #f0f2f4;
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] .task-text::selection {
+  background: rgba(255, 255, 255, 0.22);
+  color: #f0f2f4;
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox {
+  border-color: #f0f2f4;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked {
+  background: #f0f2f4;
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::after {
+  background-color: #1a1a1a;
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] .task-commit,
+html[data-task-highlights="dark"] .task-row[data-color] .task-delete,
+html[data-task-highlights="dark"] .task-row[data-color] .task-color {
+  color: #f0f2f4;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] .task-commit::after,
+html[data-task-highlights="dark"] .task-row[data-color] .task-delete::after,
+html[data-task-highlights="dark"] .task-row[data-color] .task-drag-handle-icon {
+  background-color: #f0f2f4;
+}
+
+html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
+  border-color: #f0f2f4;
 }
 
 /* The actions popover floats over the theme background, not the colored row,
@@ -2059,6 +2300,10 @@ h1 {
   opacity: 0.35;
 }
 
+.day-rect.is-today .day-label {
+  opacity: 0.7;
+}
+
 .day-tasks {
   flex: 1;
   min-height: 0;
@@ -2219,8 +2464,16 @@ h1 {
 @media (max-width: 900px) {
 
   .task-row {
+    /* Lock row metrics to 16px so checkbox (em) and text share one root —
+       avoids inspector-vs-phone drift from body { font-size: clamp(...vw) }
+       and from .task-text { font-size: 16px } alone. */
+    font-size: 16px;
     --task-line: 1.5em;
-    --task-pad-y: 0;
+    /* Larger hit target on mobile; optically centered on the first line below. */
+    --task-checkbox-size: 1.8em;
+    /* Was 0 with 0.5em row gap — that space now pads the plate instead so
+       colored highlights meet like on desktop without changing list density. */
+    --task-pad-y: 0.25em;
     padding-left: 0;
     gap: 0.3em;
   }
@@ -2251,19 +2504,22 @@ h1 {
     padding-left: calc(1.5em + var(--task-row-border-gap));
   }
 
-  /* Multiline: keep checkbox at the top, but nudge text down to match the
-     vertical offset single-line rows get from align-items: center. */
+  /* Multiline: keep the larger checkbox, but center it on the first text line
+     (not on the whole wrapped block). Negative when checkbox > line height. */
   .task-row.task-row-multiline .task-checkbox {
-    margin-top: 0;
+    margin-top: calc((var(--task-line) - var(--task-checkbox-size)) / 2);
   }
+
+  /* Single-line rows use align-items: center; when the checkbox is taller than
+     the line, that still looks even. No extra margin needed. */
 
   .task-row.task-row-sub {
     padding-left: 1.5em;
   }
 
   .task-checkbox {
-    width: 1.8em;
-    height: 1.8em;
+    width: var(--task-checkbox-size);
+    height: var(--task-checkbox-size);
     border-width: 0.1em;
     border-radius: 0.25em;
   }
@@ -2341,8 +2597,12 @@ h1 {
     padding-bottom: 3em;
   }
 
-  /* iOS Safari zooms the page when a focused field has font-size < 16px. */
-  .task-text,
+  /* iOS Safari zooms the page when a focused field has font-size < 16px.
+     .task-text inherits 16px from .task-row above; other fields stay explicit. */
+  .task-text {
+    font-size: inherit;
+  }
+
   .guest-auth-input,
   .sidebar-input,
   .sidebar-select,

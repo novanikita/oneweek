@@ -15,6 +15,7 @@
   let renamingId = null;
   let dragId = null;
   let openMenu = null;
+  let menuReturnFocus = null;
 
   function closeMenu() {
     if (!openMenu) return;
@@ -24,6 +25,11 @@
     document.removeEventListener("keydown", onMenuKey, true);
     window.removeEventListener("blur", closeMenu);
     window.removeEventListener("scroll", closeMenu, true);
+    const restore = menuReturnFocus;
+    menuReturnFocus = null;
+    if (restore && typeof restore.focus === "function") {
+      restore.focus({ preventScroll: true });
+    }
   }
 
   function onDocPointerDown(e) {
@@ -33,18 +39,48 @@
   }
 
   function onMenuKey(e) {
-    if (e.key === "Escape") closeMenu();
+    if (!openMenu) return;
+    const items = [...openMenu.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+    if (items.length === 0) return;
+    const idx = items.indexOf(document.activeElement);
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeMenu();
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      items[(idx + 1) % items.length]?.focus();
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(idx - 1 + items.length) % items.length]?.focus();
+      return;
+    }
+    if (e.key === "Home") {
+      e.preventDefault();
+      items[0]?.focus();
+      return;
+    }
+    if (e.key === "End") {
+      e.preventDefault();
+      items[items.length - 1]?.focus();
+    }
   }
 
-  function openContextMenu(x, y, items) {
+  function openContextMenu(x, y, items, returnFocusEl) {
     closeMenu();
     const menu = document.createElement("div");
     menu.className = "workspace-menu";
     menu.setAttribute("role", "menu");
+    const menuItems = [];
     for (const item of items) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "workspace-menu-item";
+      btn.setAttribute("role", "menuitem");
       btn.textContent = item.label;
       if (item.disabled) btn.disabled = true;
       btn.addEventListener("click", () => {
@@ -52,6 +88,7 @@
         item.onClick?.();
       });
       menu.appendChild(btn);
+      menuItems.push(btn);
     }
     document.body.appendChild(menu);
 
@@ -62,10 +99,16 @@
     menu.style.top = `${Math.max(4, Math.min(y, maxY))}px`;
 
     openMenu = menu;
+    menuReturnFocus = returnFocusEl || document.activeElement;
     document.addEventListener("mousedown", onDocPointerDown, true);
     document.addEventListener("keydown", onMenuKey, true);
     window.addEventListener("blur", closeMenu);
     window.addEventListener("scroll", closeMenu, true);
+    requestAnimationFrame(() => {
+      (menuItems.find((b) => !b.disabled) || menuItems[0])?.focus({
+        preventScroll: true,
+      });
+    });
   }
 
   function startRename(id) {
@@ -101,8 +144,16 @@
   async function handleDelete(id) {
     const items = ws.getList();
     if (items.length <= 1) return;
+    if (typeof ws.isDefaultWorkspace === "function" && ws.isDefaultWorkspace(id)) return;
     const item = items.find((w) => w.id === id);
-    const msg = item ? `Delete workspace "${item.name}"?` : "Delete workspace?";
+    const taskCount =
+      typeof ws.countTasks === "function" ? await ws.countTasks(id) : null;
+    const msg =
+      typeof ws.formatDeleteConfirmMessage === "function"
+        ? ws.formatDeleteConfirmMessage(item?.name ?? "", taskCount)
+        : item
+          ? `Delete workspace "${item.name}"?`
+          : "Delete workspace?";
     if (typeof window.confirm === "function" && !window.confirm(msg)) return;
     await ws.remove(id);
   }
@@ -179,10 +230,12 @@
         { label: "Rename", onClick: () => startRename(item.id) },
         {
           label: "Delete",
-          disabled: items.length <= 1,
+          disabled:
+            items.length <= 1 ||
+            (typeof ws.isDefaultWorkspace === "function" && ws.isDefaultWorkspace(item.id)),
           onClick: () => void handleDelete(item.id),
         },
-      ]);
+      ], tab);
     });
 
     tab.addEventListener("dragstart", (e) => {
@@ -319,10 +372,11 @@
     if (next) select.value = next;
 
     const activeItem = items.find((w) => w.id === next);
-    const isMain =
-      !activeItem ||
-      activeItem.name.trim().toLowerCase() === MAIN_NAME;
-    const canDelete = !isMain && items.length > 1;
+    const isDefault =
+      typeof ws.isDefaultWorkspace === "function"
+        ? ws.isDefaultWorkspace(next)
+        : !activeItem || activeItem.name.trim().toLowerCase() === MAIN_NAME;
+    const canDelete = !isDefault && items.length > 1;
     deleteActions.hidden = !canDelete;
   }
 
@@ -346,9 +400,18 @@
     const items = ws.getList();
     if (items.length <= 1) return;
     const item = items.find((w) => w.id === id);
-    const msg = item
-      ? `Delete workspace "${item.name}"?`
-      : "Delete workspace?";
+    if (
+      !item ||
+      (typeof ws.isDefaultWorkspace === "function" && ws.isDefaultWorkspace(id))
+    ) {
+      return;
+    }
+    const taskCount =
+      typeof ws.countTasks === "function" ? await ws.countTasks(id) : null;
+    const msg =
+      typeof ws.formatDeleteConfirmMessage === "function"
+        ? ws.formatDeleteConfirmMessage(item.name, taskCount)
+        : `Delete workspace "${item.name}"?`;
     if (typeof window.confirm === "function" && !window.confirm(msg)) return;
     await ws.remove(id);
   });

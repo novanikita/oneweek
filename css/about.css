@@ -30,6 +30,7 @@ body {
   font-family: inherit;
   color: var(--color-text);
   background: var(--color-background);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .about-site-header {
@@ -40,6 +41,7 @@ body {
   z-index: 10;
   background: var(--color-background);
   border-bottom: 0.07em solid var(--color-border);
+  padding-top: env(safe-area-inset-top, 0px);
 }
 
 .about-site-header-inner {

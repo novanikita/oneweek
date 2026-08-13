@@ -2,15 +2,56 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>oneweek</title>
-    <link rel="icon" href="./oneweek-favicon.svg" type="image/svg+xml" />
+    <meta
+      name="description"
+      content="One week on a screen — everything important in view."
+    />
+    <meta name="application-name" content="oneweek" />
+    <meta name="apple-mobile-web-app-title" content="oneweek" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="theme-color" content="#f9e6ef" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+
+    <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: light)" />
+    <link rel="icon" href="./icons/favicon-dark.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/icon-192.png" type="image/png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" media="(prefers-color-scheme: light)" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon-dark.png" media="(prefers-color-scheme: dark)" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="manifest" href="./site.webmanifest" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="oneweek" />
+    <meta property="og:title" content="oneweek" />
+    <meta
+      property="og:description"
+      content="One week on a screen — everything important in view."
+    />
+    <meta property="og:image" content="./icons/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image" content="./icons/og-cover.png" />
+    <meta property="og:image:width" content="1920" />
+    <meta property="og:image:height" content="1080" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="oneweek" />
+    <meta
+      name="twitter:description"
+      content="One week on a screen — everything important in view."
+    />
+    <meta name="twitter:image" content="./icons/og-image.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="./css/colors.css" />
-    <link rel="stylesheet" href="./css/styles.css?v=20260720-15" />
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
-    <script src="./js/theme-init.js"></script>
+    <link rel="stylesheet" href="./css/colors.css?v=20260812-1" />
+    <link rel="stylesheet" href="./css/styles.css?v=20260813-15" />
+    <!-- Pinned @supabase/supabase-js@2.49.8 (self-hosted; avoid floating CDN). -->
+    <script src="./js/vendor/supabase.js?v=2.49.8"></script>
+    <script src="./js/theme-init.js?v=20260813-1"></script>
   </head>
   <body>
     <script>
@@ -20,7 +61,7 @@
       );
     </script>
 
-    <main class="layout">
+    <main class="layout" id="app-main">
       <header class="panel-titlebar layout-header">
         <button
           class="icon-button layout-header-menu"
@@ -147,8 +188,12 @@
       aria-live="polite"
       hidden
     >
-      <span class="connection-banner-text">пока нет связи, но задачи всё равно сохраняются</span>
+      <span class="connection-banner-text"
+        >No connection right now, but your tasks are still saved locally.</span
+      >
     </div>
+
+    <div id="undo-hint" class="undo-hint" role="status" aria-live="polite" hidden></div>
 
     <div
       class="guest-auth-backdrop"
@@ -156,15 +201,16 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby="guest-auth-title"
+      aria-describedby="guest-auth-desc"
       hidden
     >
       <div class="guest-auth-modal">
         <h2 id="guest-auth-title" class="guest-auth-title">
           Sign in or sign up
         </h2>
-        <p class="guest-auth-text">
-          Required to safely store your tasks and sync them across your
-          devices.
+        <p id="guest-auth-desc" class="guest-auth-text">
+          Sign in is required to continue. Your tasks are stored securely and
+          sync across your devices.
         </p>
         <form
           class="guest-auth-form"
@@ -200,9 +246,14 @@
             minlength="6"
             required
           />
-          <button type="submit" class="guest-auth-submit" id="guest-auth-submit">
-            Sign in / Sign up
+          <div class="guest-auth-actions">
+          <button type="submit" class="guest-auth-submit" id="guest-auth-signin">
+            Sign in
           </button>
+          <button type="button" class="guest-auth-submit guest-auth-submit-secondary" id="guest-auth-signup">
+            Create account
+          </button>
+          </div>
         </form>
         <div id="guest-auth-message-slot" class="guest-auth-message-slot">
           <p
@@ -263,25 +314,41 @@
               placeholder="My theme"
             />
             <label class="sidebar-label" for="theme-color-text">Text</label>
-            <input
-              id="theme-color-text"
-              class="sidebar-input"
-              type="text"
-              inputmode="text"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="#000000"
-            />
+            <div class="theme-color-field">
+              <button
+                type="button"
+                class="theme-color-swatch"
+                data-theme-color-for="theme-color-text"
+                aria-label="Pick text color"
+              ></button>
+              <input
+                id="theme-color-text"
+                class="sidebar-input"
+                type="text"
+                inputmode="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="#000000"
+              />
+            </div>
             <label class="sidebar-label" for="theme-color-background">Background</label>
-            <input
-              id="theme-color-background"
-              class="sidebar-input"
-              type="text"
-              inputmode="text"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="#ffffff"
-            />
+            <div class="theme-color-field">
+              <button
+                type="button"
+                class="theme-color-swatch"
+                data-theme-color-for="theme-color-background"
+                aria-label="Pick background color"
+              ></button>
+              <input
+                id="theme-color-background"
+                class="sidebar-input"
+                type="text"
+                inputmode="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="#ffffff"
+              />
+            </div>
             <label class="sidebar-label" for="theme-font">Font</label>
             <div class="sidebar-select-wrap">
               <select id="theme-font" class="sidebar-select"></select>
@@ -305,11 +372,8 @@
         <div class="sidebar-account sidebar-section">
           <p id="auth-status" class="auth-status" aria-live="polite"></p>
           <div id="auth-account-guest" class="auth-account-panel">
-            <input id="email" class="sidebar-input" placeholder="Email" />
-            <input id="password" class="sidebar-input" type="password" placeholder="Password" />
             <div class="sidebar-actions">
-              <button type="button" id="auth-signup">Sign up</button>
-              <button type="button" id="auth-login">Login</button>
+              <button type="button" id="auth-open-signin">Sign in / Sign up</button>
             </div>
           </div>
           <div id="auth-account-signed-in" class="auth-account-panel" hidden>
@@ -324,8 +388,34 @@
       </div>
     </nav>
 
-    <script src="./js/workspaces.js"></script>
-    <script src="./js/script.js?v=20260720-17"></script>
-    <script src="./js/workspace-tabs.js"></script>
+    <div id="theme-color-picker" class="theme-color-picker" hidden>
+      <div class="theme-color-sv" id="theme-color-sv">
+        <div class="theme-color-sv-cursor" id="theme-color-sv-cursor"></div>
+      </div>
+      <div class="theme-color-hue-row">
+        <button
+          type="button"
+          class="theme-color-eyedropper"
+          id="theme-color-eyedropper"
+          aria-label="Pick color from screen"
+        >
+          <span class="icon-themed icon-themed-eyedropper" aria-hidden="true"></span>
+        </button>
+        <div class="theme-color-hue" id="theme-color-hue">
+          <div class="theme-color-hue-cursor" id="theme-color-hue-cursor"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="./js/workspaces.js?v=20260813-17"></script>
+    <script src="./js/script.js?v=20260813-28"></script>
+    <script src="./js/workspace-tabs.js?v=20260813-12"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("./sw.js").catch(() => {});
+        });
+      }
+    </script>
   </body>
 </html>
