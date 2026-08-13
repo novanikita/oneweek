@@ -44,9 +44,17 @@ Each file is idempotent (`if not exists`, safe to re-run).
 
 ## Deploying
 
-Upload the repo (or build output) to static hosting. Bump cache-bust query params on `index.html` script/style links when JS or CSS changes.
+### Vercel (recommended)
 
-If you use the included service worker (`sw.js`), deploy it at the site root and bump `CACHE` when precache URLs change.
+1. Import `novanikita/oneweek` in [Vercel](https://vercel.com/new) and connect GitHub.
+2. Leave **Framework Preset** as *Other* — no build command, output is the repo root.
+3. Deploy. `vercel.json` sets cache headers for `sw.js` and the web manifest.
+
+After JS/CSS changes, bump cache-bust query params on `index.html` script/style links. When precache URLs change, bump `CACHE` in `sw.js`.
+
+### Other static hosts
+
+Upload the repo root to any static host. Deploy `sw.js` at the site root.
 
 ## Auth
 
