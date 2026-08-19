@@ -22,5 +22,12 @@
         }
       ]
     }
+  ],
+  "redirects": [
+    {
+      "source": "/auth/:path*",
+      "destination": "/",
+      "permanent": false
+    }
   ]
 }

@@ -234,6 +234,24 @@ function showUndoDeleteHint() {
   }, 3200);
 }
 
+let appToastTimer = null;
+
+function showAppToast(message) {
+  const el = document.getElementById("app-toast");
+  if (!el || !message) return;
+  el.textContent = message;
+  el.hidden = false;
+  if (appToastTimer) clearTimeout(appToastTimer);
+  appToastTimer = setTimeout(() => {
+    el.hidden = true;
+    appToastTimer = null;
+  }, 3200);
+}
+
+function showMainThingLimitToast() {
+  showAppToast("There can only be one main thing :)");
+}
+
 function updateConnectionBanner() {
   const banner = document.getElementById("connection-banner");
   if (!banner) return;
@@ -328,6 +346,7 @@ function createPersistTask(insertOrUpdateTaskInDb, logPrefix = "Supabase persist
       checked: !!task.checked,
       subtask: !!task.subtask,
       color: normalizeTaskColor(task.color),
+      isMain: !!task.isMain,
       // Frozen at queue time so a workspace switch mid-persist cannot insert
       // into the wrong bucket.
       workspaceId: getActiveWorkspaceId() ?? null,
@@ -495,6 +514,103 @@ async function awaitWorkspaceReady(userId) {
   }
 }
 
+const EMAIL_OTP_TYPES = new Set([
+  "signup",
+  "invite",
+  "magiclink",
+  "recovery",
+  "email_change",
+  "email",
+]);
+
+function getAuthEmailRedirectTo() {
+  const origin = window.location.origin;
+  if (!origin || origin === "null" || !/^https?:\/\//.test(origin)) return undefined;
+  return `${origin}/`;
+}
+
+function readAuthCallbackParams() {
+  const url = new URL(window.location.href);
+  const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+  const get = (key) => url.searchParams.get(key) || hash.get(key) || "";
+  return { url, get };
+}
+
+function friendlyAuthCallbackError(raw) {
+  const msg = decodeURIComponent(String(raw || "").replace(/\+/g, " ")).trim();
+  const lower = msg.toLowerCase();
+  if (lower.includes("expired") || lower.includes("invalid")) {
+    return "This confirmation link is invalid or has expired. Create the account again to get a new email.";
+  }
+  return msg || "Couldn't confirm email.";
+}
+
+function stripAuthCallbackFromAddress() {
+  const url = new URL(window.location.href);
+  const keys = [
+    "token_hash",
+    "type",
+    "next",
+    "code",
+    "error",
+    "error_code",
+    "error_description",
+    "error_link_type",
+  ];
+  let changed = false;
+  for (const key of keys) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (/access_token|refresh_token|error_description|error=|token_hash/.test(url.hash)) {
+    url.hash = "";
+    changed = true;
+  }
+  let path = url.pathname;
+  if (path === "/auth/confirm" || path.startsWith("/auth/")) {
+    path = "/";
+    changed = true;
+  }
+  if (!changed) return;
+  const search = url.searchParams.toString();
+  history.replaceState({}, "", path + (search ? `?${search}` : "") + url.hash);
+}
+
+/**
+ * Confirm-signup emails often land on /auth/confirm?token_hash=… (or /?code=…).
+ * Exchange the token here so the user is signed in on this static app.
+ */
+async function consumeEmailAuthCallback(supabase) {
+  const { get } = readAuthCallbackParams();
+  const errorCode = get("error") || get("error_code");
+  const errorDescription = get("error_description");
+  if (errorCode || errorDescription) {
+    window.__oneweekAuthCallbackError = friendlyAuthCallbackError(
+      errorDescription || errorCode
+    );
+    stripAuthCallbackFromAddress();
+    return;
+  }
+
+  const tokenHash = get("token_hash");
+  const typeRaw = get("type");
+  if (tokenHash) {
+    const type = EMAIL_OTP_TYPES.has(typeRaw) ? typeRaw : "email";
+    const { error } = await supabase.auth.verifyOtp({
+      token_hash: tokenHash,
+      type,
+    });
+    if (error) {
+      window.__oneweekAuthCallbackError = friendlyAuthCallbackError(
+        error.message
+      );
+    }
+    stripAuthCallbackFromAddress();
+  }
+}
+
 /**
  * Single auth subscription for the app. Workspaces load first, then panel
  * listeners run — avoids each panel calling getSession + onAuthStateChange.
@@ -563,10 +679,25 @@ const ONEWEEK_AUTH_CHANGE = "oneweek-auth-change";
 
   const readyPromise = (async () => {
     try {
+      const hadAuthCode =
+        new URLSearchParams(window.location.search).has("code") ||
+        /(?:^|[&#])code=/.test(window.location.hash);
+
+      await consumeEmailAuthCallback(supabase);
+
       if (typeof window.oneweekWorkspaces?.init === "function") {
         await window.oneweekWorkspaces.init({ supabase });
       }
       const { data } = await supabase.auth.getSession();
+      if (
+        hadAuthCode &&
+        !data?.session &&
+        !window.__oneweekAuthCallbackError
+      ) {
+        window.__oneweekAuthCallbackError =
+          "Couldn't finish signing in from this link. Open it on the same device you used to create the account, or create the account again.";
+      }
+      stripAuthCallbackFromAddress();
       if (authEventsSeen === 0) {
         await enqueue(data?.session ?? null);
       }
@@ -717,6 +848,7 @@ function writeTasksCache(key, tasks) {
       subtask: !!t.subtask,
       color: normalizeTaskColor(t.color),
       position: typeof t.position === "number" ? t.position : i,
+      isMain: !!t.isMain,
       // `_dirty` survives reload so unsynced offline edits are retried.
       dirty: !!t._dirty,
     }));
@@ -913,6 +1045,29 @@ function createTaskColorButton() {
   dot.className = "task-color-dot";
   dot.setAttribute("aria-hidden", "true");
   btn.appendChild(dot);
+  return btn;
+}
+
+function createTaskIndentButton(isSubtask) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "task-indent";
+  const label = isSubtask ? "Make a regular task" : "Make subtask";
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+  return btn;
+}
+
+function createTaskStarButton(isOn) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `task-star${isOn ? " is-on" : ""}`;
+  btn.setAttribute(
+    "aria-label",
+    isOn ? "Remove as this week’s main thing" : "Set as this week’s main thing"
+  );
+  btn.title = isOn ? "This week’s main thing" : "Set as this week’s main thing";
+  btn.setAttribute("aria-pressed", isOn ? "true" : "false");
   return btn;
 }
 
@@ -1434,6 +1589,7 @@ function hideAllTaskDropIndicators() {
   document.querySelectorAll(".task-drop-indicator").forEach((el) => {
     el.hidden = true;
   });
+  document.getElementById("main-thing")?.classList.remove("is-drop-target");
 }
 
 function updateTaskDropIndicator(anchorEl, indicator, listEl, e, draggedRowId, getTaskIndex) {
@@ -1538,6 +1694,7 @@ async function supabaseRelocateTaskRow(supabase, userId, rowId, fields) {
   };
   if (fields.workspace_id) update.workspace_id = fields.workspace_id;
   if (typeof fields.position === "number") update.position = fields.position;
+  if (typeof fields.is_main === "boolean") update.is_main = fields.is_main;
   const { error } = await supabase
     .from("tasks")
     .update(update)
@@ -1581,7 +1738,31 @@ function canIndentAsSubtask(tasks, idx) {
   const task = tasks[idx];
   if (task.subtask) return false;
   if (mainTaskHasSubtasks(tasks, idx)) return false;
-  return !tasks[idx - 1].subtask;
+  // Don't pull a regular task into this week's main-thing block via indent.
+  if (
+    typeof indexIsInMainThingSpan === "function" &&
+    indexIsInMainThingSpan(tasks, idx - 1) &&
+    !indexIsInMainThingSpan(tasks, idx)
+  ) {
+    return false;
+  }
+  let parentIdx = idx - 1;
+  while (parentIdx >= 0 && tasks[parentIdx].subtask) parentIdx -= 1;
+  return parentIdx >= 0;
+}
+
+function applyTaskSubtaskIndent(tasks, idx, { outdent = false } = {}) {
+  if (idx < 0 || idx >= tasks.length) return false;
+  const task = tasks[idx];
+  if (outdent) {
+    if (task.subtask) outdentSubtask(tasks, idx);
+    else task.subtask = false;
+    return true;
+  }
+  if (!canIndentAsSubtask(tasks, idx)) return false;
+  task.subtask = true;
+  moveSubtaskUnderImmediateRowAbove(tasks, idx);
+  return true;
 }
 
 /** True when local state has unsynced edits that must preserve client-side order. */
@@ -1653,10 +1834,11 @@ function mergeLocalEditsIntoServerSnapshot(
           checked: local.checked,
           subtask: local.subtask,
           color: normalizeTaskColor(local.color),
+          isMain: !!local.isMain,
           _dirty: true,
         });
       } else {
-        result.push({ ...srv, id: local.id });
+        result.push({ ...srv, id: local.id, isMain: !!srv.isMain });
       }
     } else if (!isTaskEmptyText(local.text)) {
       const k = contentKey(local);
@@ -1680,6 +1862,7 @@ function mergeLocalEditsIntoServerSnapshot(
           checked: !!local.checked,
           subtask: !!local.subtask,
           color: normalizeTaskColor(local.color),
+          isMain: !!local.isMain,
           _dirty: true,
         });
       }
@@ -1698,9 +1881,9 @@ function isTabNavigationKey(e) {
   return e.key === "Tab" || e.code === "Tab" || e.keyCode === 9;
 }
 
-/** Alt+Tab indents/outdents; plain Tab keeps native focus navigation. */
+/** Tab indents; Shift+Tab outdents. Meta/Ctrl+Tab left for the browser. */
 function isTaskIndentKey(e) {
-  return isTabNavigationKey(e) && e.altKey && !e.metaKey && !e.ctrlKey;
+  return isTabNavigationKey(e) && !e.metaKey && !e.ctrlKey && !e.altKey;
 }
 
 function handleTaskTextTabIndent(e, ctx) {
@@ -1715,28 +1898,26 @@ function handleTaskTextTabIndent(e, ctx) {
     isTaskEmptyText: isEmpty = isTaskEmptyText,
   } = ctx;
   if (!isTaskIndentKey(e)) return false;
+  const idx = getTaskIndex(taskId);
+  if (idx === -1) return false;
+  const task = tasks[idx];
+  const willOutdent = !!e.shiftKey;
+  if (willOutdent) {
+    if (!task.subtask) return false;
+  } else if (!canIndentAsSubtask(tasks, idx)) {
+    return false;
+  }
   e.preventDefault();
   e.stopImmediatePropagation();
-  const idx = getTaskIndex(taskId);
-  if (idx === -1) return true;
-  const task = tasks[idx];
   const input = e.target;
-  if (e.shiftKey) {
-    if (task.subtask) {
-      outdentSubtask(tasks, idx);
-    } else {
-      task.subtask = false;
-    }
-  } else if (canIndentAsSubtask(tasks, idx)) {
-    task.subtask = true;
-    moveSubtaskUnderImmediateRowAbove(tasks, idx);
-  }
+  applyTaskSubtaskIndent(tasks, idx, { outdent: willOutdent });
   const fixed = normalizeSubtaskFlags(tasks);
   persistSubtaskNormalizationFixes(fixed, ctx);
   if (!isEmpty(task.text)) {
     markTaskDirty(task);
     void persistTask(task);
   }
+  if (typeof ctx.reorder === "function") ctx.reorder(tasks);
   schedulePersistTaskPositions();
   if (ctx.setFocusAfterRender) {
     ctx.setFocusAfterRender({
@@ -1747,6 +1928,35 @@ function handleTaskTextTabIndent(e, ctx) {
   }
   render();
   return true;
+}
+
+function applyTaskIndentFromButton(ctx, taskId) {
+  const {
+    tasks,
+    getTaskIndex,
+    persistTask,
+    markTaskDirty,
+    schedulePersistTaskPositions,
+    render,
+    isTaskEmptyText: isEmpty = isTaskEmptyText,
+  } = ctx;
+  const idx = getTaskIndex(taskId);
+  if (idx === -1) return;
+  const task = tasks[idx];
+  const changed = applyTaskSubtaskIndent(tasks, idx, { outdent: !!task.subtask });
+  if (!changed) return;
+  const fixed = normalizeSubtaskFlags(tasks);
+  persistSubtaskNormalizationFixes(fixed, ctx);
+  if (!isEmpty(task.text)) {
+    markTaskDirty(task);
+    void persistTask(task);
+  }
+  if (typeof ctx.reorder === "function") ctx.reorder(tasks);
+  schedulePersistTaskPositions();
+  if (ctx.setFocusAfterRender) {
+    ctx.setFocusAfterRender({ id: task.id });
+  }
+  render();
 }
 
 /**
@@ -1783,6 +1993,8 @@ function isTaskRowActionTarget(e) {
     e.target.classList?.contains("task-commit") ||
     e.target.classList?.contains("task-delete") ||
     !!e.target.closest?.(".task-color") ||
+    !!e.target.closest?.(".task-star") ||
+    !!e.target.closest?.(".task-indent") ||
     e.target.classList?.contains("task-drag-handle") ||
     e.target.classList?.contains("task-drag-handle-icon") ||
     !!e.target.closest?.(".task-drag-handle") ||
@@ -1812,6 +2024,7 @@ function cloneTaskSnapshot(task) {
     subtask: !!task.subtask,
     color: normalizeTaskColor(task.color),
     dbId: task.dbId ?? null,
+    isMain: !!task.isMain,
   };
 }
 
@@ -1959,6 +2172,7 @@ async function relocateCrossMoveSubtree(
       is_subtask: !!row.subtask,
       color: normalizeTaskColor(row.color),
       position: startPosition + i,
+      is_main: !!(targetRelocate.is_main && i === 0 && !row.subtask),
     });
     if (!ok) {
       for (let j = reverted.length - 1; j >= 0; j--) {
@@ -2181,8 +2395,69 @@ function firstCheckedTaskIndex(tasks) {
  * after every open (unchecked-main) group, before the first completed main.
  */
 function insertIndexForNewOpenMain(tasks) {
-  const idx = firstCheckedTaskIndex(tasks);
-  return idx === -1 ? tasks.length : idx;
+  const span = getMainThingSpan(tasks);
+  const from = span ? span.start + span.count : 0;
+  for (let i = from; i < tasks.length; i++) {
+    if (tasks[i].checked && !tasks[i].subtask) return i;
+  }
+  return tasks.length;
+}
+
+function getMainThingIndex(tasks) {
+  return tasks.findIndex((t) => t.isMain && !t.subtask);
+}
+
+function getMainThingSpan(tasks) {
+  const idx = getMainThingIndex(tasks);
+  if (idx === -1) return null;
+  return getTaskSubtreeSpan(tasks, idx);
+}
+
+function indexIsInMainThingSpan(tasks, idx) {
+  const span = getMainThingSpan(tasks);
+  if (!span || idx < 0) return false;
+  return idx >= span.start && idx < span.start + span.count;
+}
+
+function normalizeMainThingFlags(tasks) {
+  let kept = false;
+  for (const t of tasks) {
+    if (t.subtask) {
+      t.isMain = false;
+      continue;
+    }
+    if (t.isMain) {
+      if (kept) t.isMain = false;
+      else kept = true;
+    }
+  }
+}
+
+function partitionKeepingMainThing(tasks) {
+  const span = getMainThingSpan(tasks);
+  let head = [];
+  let rest = tasks;
+  if (span) {
+    head = tasks.slice(span.start, span.start + span.count);
+    rest = tasks.slice(0, span.start).concat(tasks.slice(span.start + span.count));
+    if (head[0]) head[0].isMain = true;
+    for (let i = 1; i < head.length; i++) head[i].isMain = false;
+    const hg = splitIntoTaskGroups(head);
+    head = [];
+    for (const g of hg) {
+      const u = g.subs.filter((s) => !s.checked);
+      const c = g.subs.filter((s) => s.checked);
+      head.push(g.main, ...u, ...c);
+    }
+  }
+  return head.concat(partitionUncheckedBeforeChecked(rest));
+}
+
+function applyOpenDonePartitionKeepingMainThing(tasks) {
+  normalizeMainThingFlags(tasks);
+  const next = partitionKeepingMainThing(tasks);
+  tasks.length = 0;
+  for (const t of next) tasks.push(t);
 }
 
 /** Re-apply open-above / done-below grouping in place (same-list drag, etc.). */
@@ -2469,10 +2744,10 @@ function insertIndexAfterEnterExitSub(tasks, parentId) {
  *   - Subtasks stay inside their parent's subtask run: checking sinks them to
  *     the bottom of that run, unchecking pops them to the top.
  */
-function toggleAndRepositionTask(tasks, idx) {
+function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBeforeChecked) {
   const task = tasks[idx];
   task.checked = !task.checked;
-  const reordered = partitionUncheckedBeforeChecked(tasks);
+  const reordered = partitionFn(tasks);
   tasks.length = 0;
   for (const t of reordered) tasks.push(t);
   return task;
@@ -2481,6 +2756,8 @@ function toggleAndRepositionTask(tasks, idx) {
 (() => {
   const tasksField = document.getElementById("tasks-field");
   const tasksFieldRoot = document.getElementById("tasks-field-root");
+  const mainThingEl = document.getElementById("main-thing");
+  const mainThingRoot = document.getElementById("main-thing-root");
   if (!tasksField || !tasksFieldRoot) return;
   const GENERAL_BLOCK_ID = "general";
 
@@ -2512,6 +2789,7 @@ function toggleAndRepositionTask(tasks, idx) {
       checked,
       subtask: !!subtask,
       color: normalizeTaskColor(color),
+      isMain: false,
       _dirty: false,
     };
   }
@@ -2573,13 +2851,91 @@ function toggleAndRepositionTask(tasks, idx) {
     return state.tasks.findIndex((t) => t.id === id);
   }
 
+  function resolveMainPromoteIndex(taskId) {
+    let idx = getTaskIndex(taskId);
+    if (idx === -1) return -1;
+    if (state.tasks[idx].subtask) {
+      idx = getParentMainTaskIndex(state.tasks, idx);
+    }
+    return idx;
+  }
+
+  function persistMainThingFlag(task) {
+    if (!task) return;
+    if (isTaskEmptyText(task.text) && !task.dbId) return;
+    markTaskDirty(task);
+    return persistTask(task);
+  }
+
+  async function demoteCurrentMainThing() {
+    const idx = getMainThingIndex(state.tasks);
+    if (idx === -1) return null;
+    const task = state.tasks[idx];
+    task.isMain = false;
+    await persistMainThingFlag(task);
+    return task;
+  }
+
+  async function promoteGeneralTaskToMain(taskId) {
+    const idx = resolveMainPromoteIndex(taskId);
+    if (idx === -1) return false;
+    const currentIdx = getMainThingIndex(state.tasks);
+    const currentId = currentIdx === -1 ? null : state.tasks[currentIdx].id;
+    if (currentId === state.tasks[idx].id) return false;
+    const displaced = await demoteCurrentMainThing();
+    const liveIdx = resolveMainPromoteIndex(taskId);
+    if (liveIdx === -1) return false;
+    state.tasks[liveIdx].isMain = true;
+    await persistMainThingFlag(state.tasks[liveIdx]);
+    normalizeSubtaskFlags(state.tasks);
+    applyOpenDonePartitionKeepingMainThing(state.tasks);
+    schedulePersistTaskPositions();
+    if (displaced) showMainThingLimitToast();
+    state.focusAfterRender = { id: state.tasks[liveIdx].id };
+    render();
+    return true;
+  }
+
+  async function unstarMainThing() {
+    if (getMainThingIndex(state.tasks) === -1) return;
+    await demoteCurrentMainThing();
+    applyOpenDonePartitionKeepingMainThing(state.tasks);
+    schedulePersistTaskPositions();
+    render();
+  }
+
+  function toggleGeneralTaskMainThing(taskId) {
+    const idx = resolveMainPromoteIndex(taskId);
+    if (idx === -1) return;
+    const currentIdx = getMainThingIndex(state.tasks);
+    if (currentIdx === idx) {
+      void unstarMainThing();
+      return;
+    }
+    void promoteGeneralTaskToMain(taskId);
+  }
+
+  function eventHitsMainThing(e) {
+    const x = e.clientX;
+    const y = e.clientY;
+    if (typeof x !== "number" || typeof y !== "number") {
+      return !!e.target?.closest?.("#main-thing");
+    }
+    const hit = document.elementFromPoint(x, y);
+    return !!hit?.closest?.("#main-thing");
+  }
+
+  function setMainThingDropTarget(on) {
+    mainThingEl?.classList.toggle("is-drop-target", !!on);
+  }
+
   function setTasksInteractivity(enabled) {
     tasksField.classList.toggle("tasks-field--guest", !enabled);
     document.querySelectorAll(".day-rect").forEach((el) => {
       el.style.pointerEvents = enabled ? "auto" : "none";
     });
     document
-      .querySelectorAll("#tasks-field-root .task-text, .day-tasks .task-text")
+      .querySelectorAll("#tasks-field .task-text, .day-tasks .task-text")
       .forEach((el) => {
         el.readOnly = !enabled;
       });
@@ -2619,6 +2975,7 @@ function toggleAndRepositionTask(tasks, idx) {
     const content = String(source.text ?? "");
     const completed = !!source.checked;
     const isSubtask = !!source.subtask;
+    const isMain = !!source.isMain && !isSubtask;
     const color = normalizeTaskColor(source.color);
     const dbId = source.dbId ?? task.dbId ?? null;
 
@@ -2642,6 +2999,7 @@ function toggleAndRepositionTask(tasks, idx) {
           content,
           completed,
           is_subtask: isSubtask,
+          is_main: isMain,
           color,
           position,
         })
@@ -2668,6 +3026,7 @@ function toggleAndRepositionTask(tasks, idx) {
       type: "general",
       date: getVisibleWeekMondayIso(),
       is_subtask: isSubtask,
+      is_main: isMain,
       color,
       position,
       workspace_id: workspaceId,
@@ -2725,10 +3084,13 @@ function toggleAndRepositionTask(tasks, idx) {
       subtask: !!row.subtask,
       color: normalizeTaskColor(row.color),
       position: typeof row.position === "number" ? row.position : i,
+      isMain: !!row.isMain,
       _dirty: !!row.dirty,
     }));
     const fixed = normalizeSubtaskFlags(state.tasks);
     persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
+    normalizeMainThingFlags(state.tasks);
+    applyOpenDonePartitionKeepingMainThing(state.tasks);
     syncCollapsedSubtasksFromStorage(state.tasks, workspaceId);
     pruneCollapsedSubtaskStorage(state.tasks, [], workspaceId);
     return true;
@@ -2795,7 +3157,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
     const { data, error } = await supabase
       .from("tasks")
-      .select("id, content, completed, created_at, is_subtask, color, position")
+      .select("id, content, completed, created_at, is_subtask, color, position, is_main")
       .eq("user_id", authUserId)
       .eq("type", "general")
       .eq("date", requestedWeekIso)
@@ -2824,11 +3186,14 @@ function toggleAndRepositionTask(tasks, idx) {
       subtask: !!row.is_subtask,
       color: normalizeTaskColor(row.color),
       position: row.position ?? 0,
+      isMain: !!row.is_main,
       _dirty: false,
     }));
     state.tasks = mergeLocalEditsIntoServerSnapshotForGeneral(serverTasks, localBefore);
     const fixed = normalizeSubtaskFlags(state.tasks);
     persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
+    normalizeMainThingFlags(state.tasks);
+    applyOpenDonePartitionKeepingMainThing(state.tasks);
     syncPositionsFromArray(state.tasks);
     tasksWorkspaceId = workspaceId;
     syncCollapsedSubtasksFromStorage(state.tasks, workspaceId);
@@ -2956,6 +3321,7 @@ function toggleAndRepositionTask(tasks, idx) {
         !!s.subtask,
         normalizeTaskColor(s.color)
       );
+      restored.isMain = !!s.isMain;
       state.tasks.splice(insertAt, 0, restored);
       insertAt += 1;
       if (!isTaskEmptyText(restored.text) && !restoreDbId) {
@@ -2974,7 +3340,7 @@ function toggleAndRepositionTask(tasks, idx) {
   async function syncTaskFromInput(taskId) {
     const idx = getTaskIndex(taskId);
     if (idx === -1) return { needRender: true };
-    const row = tasksFieldRoot.querySelector(`.task-row[data-id="${taskId}"]`);
+    const row = tasksField.querySelector(`.task-row[data-id="${taskId}"]`);
     const input = row?.querySelector(".task-text");
     if (!input) return { needRender: true };
     const currentText = input.value;
@@ -3001,7 +3367,7 @@ function toggleAndRepositionTask(tasks, idx) {
 
   async function commitTask(taskId) {
     const { needRender } = await syncTaskFromInput(taskId);
-    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    state.tasks = partitionKeepingMainThing(state.tasks);
     schedulePersistTaskPositions();
 
     // Enter creates + focuses the next row, then the previous field's deferred
@@ -3011,7 +3377,7 @@ function toggleAndRepositionTask(tasks, idx) {
     const ae = document.activeElement;
     const otherTaskFocused =
       ae?.classList?.contains("task-text") &&
-      tasksFieldRoot.contains(ae) &&
+      tasksField.contains(ae) &&
       ae.closest(".task-row")?.dataset?.id !== taskId;
     if (otherTaskFocused && !needRender) {
       return true;
@@ -3022,7 +3388,7 @@ function toggleAndRepositionTask(tasks, idx) {
   }
 
   function focusTask(id, start, end) {
-    const row = tasksFieldRoot.querySelector(`.task-row[data-id="${id}"]`);
+    const row = tasksField.querySelector(`.task-row[data-id="${id}"]`);
     if (!row) return;
     const input = row.querySelector(".task-text");
     if (!input) return;
@@ -3038,10 +3404,8 @@ function toggleAndRepositionTask(tasks, idx) {
   }
 
   function renderGuestPrompt() {
-    // The dedicated guest auth modal (see #guest-auth-backdrop) covers the
-    // whole app with a blurred overlay, so the tasks field stays empty for
-    // signed-out visitors instead of duplicating the call-to-action here.
     tasksFieldRoot.innerHTML = "";
+    if (mainThingRoot) mainThingRoot.innerHTML = "";
   }
 
   function render() {
@@ -3063,8 +3427,22 @@ function toggleAndRepositionTask(tasks, idx) {
       }
     }
 
-    const beforeRects = captureTaskRowRects(tasksFieldRoot);
+    const beforeRects = captureTaskRowRects(tasksField);
     tasksFieldRoot.innerHTML = "";
+    if (mainThingRoot) mainThingRoot.innerHTML = "";
+
+    const mainSpan = getMainThingSpan(state.tasks);
+    const inMainSpan = (i) =>
+      !!mainSpan && i >= mainSpan.start && i < mainSpan.start + mainSpan.count;
+
+    const mainList = document.createElement("div");
+    mainList.className = "tasks-list";
+    if (!mainSpan) {
+      const empty = document.createElement("div");
+      empty.className = "main-thing-empty";
+      empty.setAttribute("aria-hidden", "true");
+      mainList.appendChild(empty);
+    }
 
     const list = document.createElement("div");
     list.className = "tasks-list";
@@ -3074,11 +3452,11 @@ function toggleAndRepositionTask(tasks, idx) {
     // pure-CSS sibling selector can't express "first completed main with any
     // mix of subtasks ahead of it", so we mark it from JS.
     const firstCompletedMainIdx = state.tasks.findIndex(
-      (t) => t.checked && !t.subtask
+      (t, i) => t.checked && !t.subtask && !inMainSpan(i)
     );
 
     for (let i = 0; i < state.tasks.length; i++) {
-      if (i === firstCompletedMainIdx) {
+      if (!inMainSpan(i) && i === firstCompletedMainIdx) {
         list.appendChild(createTasksListAddSpacer());
       }
       if (isSubtaskRowHidden(state.tasks, i)) continue;
@@ -3118,6 +3496,8 @@ function toggleAndRepositionTask(tasks, idx) {
       const colorBtn = createTaskColorButton();
       syncTaskColorButton(colorBtn, task.color);
 
+      const starBtn = createTaskStarButton(inMainSpan(i));
+      const indentBtn = createTaskIndentButton(!!task.subtask);
       const dragHandle = createTaskDragHandle();
 
       const main = document.createElement("div");
@@ -3129,6 +3509,8 @@ function toggleAndRepositionTask(tasks, idx) {
       actions.appendChild(commitBtn);
       actions.appendChild(deleteBtn);
       actions.appendChild(colorBtn);
+      actions.appendChild(indentBtn);
+      actions.appendChild(starBtn);
       actions.appendChild(dragHandle);
 
       row.appendChild(checkbox);
@@ -3149,7 +3531,7 @@ function toggleAndRepositionTask(tasks, idx) {
         );
       }
       row.appendChild(actions);
-      list.appendChild(row);
+      (inMainSpan(i) ? mainList : list).appendChild(row);
 
       checkbox.addEventListener("mousedown", (e) => {
         e.preventDefault();
@@ -3193,7 +3575,7 @@ function toggleAndRepositionTask(tasks, idx) {
             const nc = normalizeTaskColor(next);
             if (t.color === nc) return;
             t.color = nc;
-            const liveRow = tasksFieldRoot.querySelector(`.task-row[data-id="${taskId}"]`);
+            const liveRow = tasksField.querySelector(`.task-row[data-id="${taskId}"]`);
             const liveColorBtn = liveRow?.querySelector(".task-color");
             applyTaskRowColor(liveRow || row, nc);
             syncTaskColorButton(liveColorBtn || colorBtn, nc);
@@ -3204,6 +3586,39 @@ function toggleAndRepositionTask(tasks, idx) {
           },
           input,
           row
+        );
+      });
+
+      starBtn.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      starBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleGeneralTaskMainThing(taskId);
+      });
+
+      indentBtn.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      indentBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!isAuthed) return;
+        applyTaskIndentFromButton(
+          {
+            tasks: state.tasks,
+            getTaskIndex,
+            persistTask,
+            markTaskDirty,
+            schedulePersistTaskPositions,
+            render,
+            reorder: applyOpenDonePartitionKeepingMainThing,
+            setFocusAfterRender: (v) => {
+              state.focusAfterRender = v;
+            },
+          },
+          taskId
         );
       });
 
@@ -3219,6 +3634,7 @@ function toggleAndRepositionTask(tasks, idx) {
             markTaskDirty,
             schedulePersistTaskPositions,
             render,
+            reorder: applyOpenDonePartitionKeepingMainThing,
             setFocusAfterRender: (v) => {
               state.focusAfterRender = v;
             },
@@ -3252,7 +3668,10 @@ function toggleAndRepositionTask(tasks, idx) {
           clearGlobalDragPayload();
         },
         {
-          getListEl: () => tasksFieldRoot.querySelector(".tasks-list"),
+          getListEl: () =>
+            row.closest("#main-thing")
+              ? mainThingRoot?.querySelector(".tasks-list")
+              : tasksFieldRoot.querySelector(".tasks-list"),
           getAnchorEl: () => tasksField,
           getIndicator: () => generalDropIndicator,
           getDraggedId: () => state.draggedId || taskId,
@@ -3267,7 +3686,26 @@ function toggleAndRepositionTask(tasks, idx) {
             }
             state.draggedId = null;
             state.isDragging = false;
-            const list = tasksFieldRoot.querySelector(".tasks-list");
+            const hitMain = !!document
+              .elementFromPoint(clientX, clientY)
+              ?.closest?.("#main-thing");
+            const fromIdx = getTaskIndex(fromId);
+            const fromInMain = indexIsInMainThingSpan(state.tasks, fromIdx);
+            if (hitMain && !fromInMain) {
+              promoteGeneralTaskToMain(fromId);
+              return;
+            }
+            if (!hitMain && fromInMain && fromIdx !== -1) {
+              if (!state.tasks[fromIdx].subtask) {
+                state.tasks[fromIdx].isMain = false;
+                persistMainThingFlag(state.tasks[fromIdx]);
+              } else {
+                state.tasks[fromIdx].subtask = false;
+              }
+            }
+            const list = hitMain
+              ? mainThingRoot?.querySelector(".tasks-list")
+              : tasksFieldRoot.querySelector(".tasks-list");
             const moved = reorderSubtreeFromTouchPoint(
               state.tasks,
               fromId,
@@ -3278,7 +3716,7 @@ function toggleAndRepositionTask(tasks, idx) {
             );
             if (!moved) return;
             normalizeSubtaskFlags(state.tasks);
-            applyOpenDonePartition(state.tasks);
+            applyOpenDonePartitionKeepingMainThing(state.tasks);
             schedulePersistTaskPositions();
             state.focusAfterRender = { id: moved.id };
             render();
@@ -3302,12 +3740,27 @@ function toggleAndRepositionTask(tasks, idx) {
         const to = getTaskIndex(toId);
         if (from === -1 || to === -1) return;
 
+        const dropOnMain = !!row.closest("#main-thing");
+        const fromInMain = indexIsInMainThingSpan(state.tasks, from);
+        if (dropOnMain && !fromInMain) {
+          promoteGeneralTaskToMain(fromId);
+          return;
+        }
+        if (!dropOnMain && fromInMain) {
+          if (!state.tasks[from].subtask) {
+            state.tasks[from].isMain = false;
+            persistMainThingFlag(state.tasks[from]);
+          } else {
+            state.tasks[from].subtask = false;
+          }
+        }
+
         const insertBefore = taskRowInsertBefore(e, row);
         const moved = reorderSubtreeInArray(state.tasks, from, to, insertBefore);
         if (!moved) return;
 
         normalizeSubtaskFlags(state.tasks);
-        applyOpenDonePartition(state.tasks);
+        applyOpenDonePartitionKeepingMainThing(state.tasks);
         schedulePersistTaskPositions();
 
         state.focusAfterRender = { id: moved.id };
@@ -3322,15 +3775,16 @@ function toggleAndRepositionTask(tasks, idx) {
       });
     }
 
+    if (mainThingRoot) mainThingRoot.appendChild(mainList);
     tasksFieldRoot.appendChild(list);
     observeTasksListMinGap(list);
 
     // Recalculate heights after mount so multiline values keep full height.
-    tasksFieldRoot.querySelectorAll(".task-text").forEach((el) => {
+    tasksField.querySelectorAll(".task-text").forEach((el) => {
       autoSizeTextarea(el);
     });
 
-    playTaskRowFlip(tasksFieldRoot, beforeRects);
+    playTaskRowFlip(tasksField, beforeRects);
 
     if (state.focusAfterRender) {
       const { id, start, end } = state.focusAfterRender;
@@ -3371,7 +3825,11 @@ function toggleAndRepositionTask(tasks, idx) {
   function toggleCheckedAndReorder(id, caret) {
     const idx = getTaskIndex(id);
     if (idx === -1) return;
-    const task = toggleAndRepositionTask(state.tasks, idx);
+    const task = toggleAndRepositionTask(
+      state.tasks,
+      idx,
+      partitionKeepingMainThing
+    );
 
     state.focusAfterRender = {
       id: task.id,
@@ -3463,6 +3921,68 @@ function toggleAndRepositionTask(tasks, idx) {
     focusTaskRowForEdit(row, isText ? e.target : null);
   });
 
+  if (mainThingRoot) {
+    mainThingRoot.addEventListener("click", (e) => {
+      if (state.isDragging) return;
+      if (!isAuthed) return;
+      const row = e.target.closest(".task-row");
+      if (!row) return;
+      const id = row.dataset.id;
+      if (!id) return;
+      const isCheckbox = e.target.classList.contains("task-checkbox");
+      const isText = e.target.classList.contains("task-text");
+      if (isTaskRowActionTarget(e)) return;
+      if (isCheckbox) {
+        let caret;
+        const input = row.querySelector(".task-text");
+        if (input) caret = { start: input.selectionStart, end: input.selectionEnd };
+        toggleCheckedAndReorder(id, caret);
+        return;
+      }
+      focusTaskRowForEdit(row, isText ? e.target : null);
+    });
+
+    mainThingRoot.addEventListener("input", (e) => {
+      if (!isAuthed) return;
+      const input = e.target;
+      if (!input.classList || !input.classList.contains("task-text")) return;
+      const row = input.closest(".task-row");
+      const id = row?.dataset.id;
+      if (!id) return;
+      const idx = getTaskIndex(id);
+      if (idx === -1) return;
+      state.tasks[idx].text = input.value;
+      markTaskDirty(state.tasks[idx]);
+      autoSizeTextarea(input);
+    });
+
+    mainThingRoot.addEventListener("keydown", (e) => {
+      if (!isAuthed) return;
+      const input = e.target;
+      if (!input.classList || !input.classList.contains("task-text")) return;
+      const row = input.closest(".task-row");
+      const id = row?.dataset.id;
+      if (!id) return;
+      if (e.key !== "Enter") return;
+      if (e.shiftKey) return;
+      e.preventDefault();
+      void handleEnterContinue(id, input);
+    });
+
+    mainThingRoot.addEventListener("paste", (e) => {
+      if (!isAuthed) return;
+      const input = e.target;
+      if (!input.classList || !input.classList.contains("task-text")) return;
+      const text = e.clipboardData?.getData("text") ?? "";
+      if (!text || !text.includes("\n")) return;
+      e.preventDefault();
+      const row = input.closest(".task-row");
+      const id = row?.dataset.id;
+      if (!id) return;
+      splitPasteIntoTasks(id, text);
+    });
+  }
+
   tasksFieldRoot.addEventListener("input", (e) => {
     if (!isAuthed) return;
     const input = e.target;
@@ -3523,7 +4043,7 @@ function toggleAndRepositionTask(tasks, idx) {
       const neu = createTask("", false, null, false);
       state.tasks.splice(insertAt, 0, neu);
       normalizeSubtaskFlags(state.tasks);
-      state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+      state.tasks = partitionKeepingMainThing(state.tasks);
       schedulePersistTaskPositions();
       state.focusAfterRender = { id: neu.id };
       render();
@@ -3537,7 +4057,7 @@ function toggleAndRepositionTask(tasks, idx) {
       if (
         active &&
         active.classList?.contains("task-text") &&
-        tasksFieldRoot.contains(active)
+        tasksField.contains(active)
       ) {
         active.blur();
       }
@@ -3559,7 +4079,7 @@ function toggleAndRepositionTask(tasks, idx) {
     const neu = createTask("", false, null, wasSub);
     state.tasks.splice(insertAt, 0, neu);
     normalizeSubtaskFlags(state.tasks);
-    state.tasks = partitionUncheckedBeforeChecked(state.tasks);
+    state.tasks = partitionKeepingMainThing(state.tasks);
     schedulePersistTaskPositions();
     state.focusAfterRender = { id: neu.id };
     render();
@@ -3568,7 +4088,7 @@ function toggleAndRepositionTask(tasks, idx) {
   async function flushFocusedGeneralInput() {
     const active = document.activeElement;
     if (!active || !active.classList || !active.classList.contains("task-text")) return;
-    if (!tasksFieldRoot.contains(active)) return;
+    if (!tasksField.contains(active)) return;
     const row = active.closest(".task-row");
     const id = row?.dataset.id;
     if (!id) return;
@@ -3619,12 +4139,25 @@ function toggleAndRepositionTask(tasks, idx) {
 
   tasksField.addEventListener("dragover", (e) => {
     if (!isAuthed || !isActiveTaskDragEvent(e)) return;
-    const list = tasksFieldRoot.querySelector(".tasks-list");
-    if (!list) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     const payload = readDragPayloadFromEvent(e);
-    if (payload && payload.sourceBlock !== GENERAL_BLOCK_ID) {
+    const overMain = eventHitsMainThing(e);
+    const fromId = state.draggedId || payload?.localId;
+    const fromIdx = fromId ? getTaskIndex(fromId) : -1;
+    const fromInMain = indexIsInMainThingSpan(state.tasks, fromIdx);
+    const incoming = payload && payload.sourceBlock !== GENERAL_BLOCK_ID;
+
+    if (overMain && (incoming || (fromIdx !== -1 && !fromInMain))) {
+      generalDropIndicator.hide();
+      setMainThingDropTarget(true);
+      return;
+    }
+    setMainThingDropTarget(false);
+
+    const list = tasksFieldRoot.querySelector(".tasks-list");
+    if (!list) return;
+    if (incoming) {
       const insertAt = computeCrossInsertIndex(
         state.tasks,
         getTaskIndex,
@@ -3649,25 +4182,35 @@ function toggleAndRepositionTask(tasks, idx) {
     const related = e.relatedTarget;
     if (related && tasksField.contains(related)) return;
     generalDropIndicator.hide();
+    setMainThingDropTarget(false);
   });
 
-  async function handleGeneralIncomingCrossMove(payload, e) {
+  async function handleGeneralIncomingCrossMove(payload, e, { asMain = false } = {}) {
     if (!payload || payload.sourceBlock === GENERAL_BLOCK_ID) return;
 
     e.preventDefault?.();
     e.stopPropagation?.();
     e.stopImmediatePropagation?.();
 
+    const overMain = asMain || eventHitsMainThing(e);
+    let displaced = null;
+    if (overMain) {
+      displaced = await demoteCurrentMainThing();
+    }
+
     const list = tasksFieldRoot.querySelector(".tasks-list");
-    const insertAt = computeCrossInsertIndex(
-      state.tasks,
-      getTaskIndex,
-      e,
-      list,
-      !!payload.checked
-    );
+    const insertAt = overMain
+      ? 0
+      : computeCrossInsertIndex(
+          state.tasks,
+          getTaskIndex,
+          e,
+          list,
+          !!payload.checked
+        );
 
     hideAllTaskDropIndicators();
+    setMainThingDropTarget(false);
 
     const safeInsertAt = Math.max(0, Math.min(insertAt, state.tasks.length));
     const relocateTarget = {
@@ -3675,6 +4218,7 @@ function toggleAndRepositionTask(tasks, idx) {
       day_name: null,
       date: getVisibleWeekMondayIso(),
       workspace_id: getActiveWorkspaceId(),
+      is_main: !!overMain,
     };
     const relocateUserId = authUserId;
 
@@ -3694,10 +4238,17 @@ function toggleAndRepositionTask(tasks, idx) {
       payload,
       safeInsertAt
     );
+    if (overMain && inserted[0]) {
+      inserted[0].isMain = true;
+      inserted[0].subtask = false;
+    }
+    normalizeSubtaskFlags(state.tasks);
+    if (overMain) applyOpenDonePartitionKeepingMainThing(state.tasks);
     syncCollapsedSubtasksFromStorage(state.tasks, getActiveWorkspaceId());
     const insertedLocalIds = inserted.map((t) => t.id);
     schedulePersistTaskPositions();
     state.focusAfterRender = { id: inserted[0]?.id };
+    if (overMain && displaced) showMainThingLimitToast();
     render();
 
     await flushAllTaskSaves();
@@ -3779,11 +4330,29 @@ function toggleAndRepositionTask(tasks, idx) {
         e.preventDefault();
         e.stopPropagation();
         hideAllTaskDropIndicators();
+        setMainThingDropTarget(false);
         const fromId = state.draggedId || payload.localId || e.dataTransfer?.getData?.("text/plain");
         state.draggedId = null;
         state.isDragging = false;
         if (!fromId) return;
-        const list = tasksFieldRoot.querySelector(".tasks-list");
+        const overMain = eventHitsMainThing(e);
+        const fromIdx = getTaskIndex(fromId);
+        const fromInMain = indexIsInMainThingSpan(state.tasks, fromIdx);
+        if (overMain && !fromInMain) {
+          void promoteGeneralTaskToMain(fromId);
+          return;
+        }
+        if (!overMain && fromInMain && fromIdx !== -1) {
+          if (!state.tasks[fromIdx].subtask) {
+            state.tasks[fromIdx].isMain = false;
+            persistMainThingFlag(state.tasks[fromIdx]);
+          } else {
+            state.tasks[fromIdx].subtask = false;
+          }
+        }
+        const list = overMain
+          ? mainThingRoot?.querySelector(".tasks-list")
+          : tasksFieldRoot.querySelector(".tasks-list");
         const moved = reorderTaskFromSameListDrop(
           state.tasks,
           fromId,
@@ -3793,7 +4362,7 @@ function toggleAndRepositionTask(tasks, idx) {
         );
         if (!moved) return;
         normalizeSubtaskFlags(state.tasks);
-        applyOpenDonePartition(state.tasks);
+        applyOpenDonePartitionKeepingMainThing(state.tasks);
         schedulePersistTaskPositions();
         state.focusAfterRender = { id: moved.id };
         render();
@@ -3815,6 +4384,16 @@ function toggleAndRepositionTask(tasks, idx) {
       detail.payload,
       syntheticPointerEvent(detail.clientX, detail.clientY)
     );
+  });
+
+  window.addEventListener("oneweek-promote-to-main", async (e) => {
+    const payload = e.detail?.payload;
+    if (!payload || !isAuthed) return;
+    if (payload.sourceBlock === GENERAL_BLOCK_ID) {
+      toggleGeneralTaskMainThing(payload.localId);
+      return;
+    }
+    await handleGeneralIncomingCrossMove(payload, { clientX: 0, clientY: 0 }, { asMain: true });
   });
 
   window.addEventListener("task-cross-move", (e) => {
@@ -3852,6 +4431,7 @@ function toggleAndRepositionTask(tasks, idx) {
         !!s.subtask,
         normalizeTaskColor(s.color)
       );
+      restored.isMain = !!s.isMain;
       state.tasks.splice(insertAt, 0, restored);
       insertAt += 1;
     }
@@ -4296,6 +4876,7 @@ function toggleAndRepositionTask(tasks, idx) {
             content,
             completed,
             is_subtask: isSubtask,
+            is_main: false,
             color,
             position,
           })
@@ -4323,6 +4904,7 @@ function toggleAndRepositionTask(tasks, idx) {
         day_name: dayMeta.dayName,
         date: dayMeta.date,
         is_subtask: isSubtask,
+        is_main: false,
         color,
         position,
         workspace_id: workspaceId,
@@ -4741,6 +5323,8 @@ function toggleAndRepositionTask(tasks, idx) {
         const colorBtn = createTaskColorButton();
         syncTaskColorButton(colorBtn, task.color);
 
+        const starBtn = createTaskStarButton(false);
+        const indentBtn = createTaskIndentButton(!!task.subtask);
         const dragHandle = createTaskDragHandle();
 
         const actions = document.createElement("div");
@@ -4748,6 +5332,8 @@ function toggleAndRepositionTask(tasks, idx) {
         actions.appendChild(commitBtn);
         actions.appendChild(deleteBtn);
         actions.appendChild(colorBtn);
+        actions.appendChild(indentBtn);
+        actions.appendChild(starBtn);
         actions.appendChild(dragHandle);
 
         row.appendChild(checkbox);
@@ -4826,6 +5412,43 @@ function toggleAndRepositionTask(tasks, idx) {
           );
         });
 
+        starBtn.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        starBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!isAuthed) return;
+          const payload = buildDragPayload(task);
+          window.dispatchEvent(
+            new CustomEvent("oneweek-promote-to-main", { detail: { payload } })
+          );
+        });
+
+        indentBtn.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        indentBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!isAuthed) return;
+          applyTaskIndentFromButton(
+            {
+              tasks: state.tasks,
+              getTaskIndex,
+              persistTask,
+              markTaskDirty,
+              schedulePersistTaskPositions,
+              render,
+              reorder: applyOpenDonePartition,
+              setFocusAfterRender: (v) => {
+                state.focusAfterRender = v;
+              },
+            },
+            taskId
+          );
+        });
+
         input.addEventListener(
           "keydown",
           (e) => {
@@ -4838,6 +5461,7 @@ function toggleAndRepositionTask(tasks, idx) {
               markTaskDirty,
               schedulePersistTaskPositions,
               render,
+              reorder: applyOpenDonePartition,
               setFocusAfterRender: (v) => {
                 state.focusAfterRender = v;
               },
@@ -6517,6 +7141,8 @@ window.addEventListener("load", () => {
     ".task-row:has(.task-commit:focus)",
     ".task-row:has(.task-delete:focus)",
     ".task-row:has(.task-color:focus)",
+    ".task-row:has(.task-star:focus)",
+    ".task-row:has(.task-indent:focus)",
     ".task-row:has(.task-drag-handle:focus)",
     ".task-row.task-row-reorder-active",
     ".task-row.task-row-color-open",
@@ -6800,7 +7426,11 @@ window.addEventListener("load", () => {
 
     if (looksLikeUnconfirmedEmail(signInError)) {
       try {
-        await supabase.auth.resend({ type: "signup", email: creds.email });
+        await supabase.auth.resend({
+          type: "signup",
+          email: creds.email,
+          options: { emailRedirectTo: getAuthEmailRedirectTo() },
+        });
       } catch (_) {
         /* best-effort */
       }
@@ -6820,7 +7450,11 @@ window.addEventListener("load", () => {
     setPending(true);
     setMessage("Creating account...");
 
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp(creds);
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email: creds.email,
+      password: creds.password,
+      options: { emailRedirectTo: getAuthEmailRedirectTo() },
+    });
 
     setPending(false);
 
@@ -6844,8 +7478,15 @@ window.addEventListener("load", () => {
   document.addEventListener("keydown", onGuestKeydown, true);
 
   async function applySession(session) {
-    if (session?.user) hide();
-    else show();
+    if (session?.user) {
+      hide();
+      return;
+    }
+    show();
+    const callbackError = window.__oneweekAuthCallbackError;
+    if (callbackError) {
+      setMessage(callbackError, true);
+    }
   }
 
   if (window.oneweekAuth?.subscribe) {

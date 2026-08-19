@@ -1,16 +1,16 @@
 /* oneweek app-shell service worker — caches UI assets; never caches API. */
-const CACHE = "oneweek-shell-v7";
+const CACHE = "oneweek-shell-v11";
 
 const REQUIRED_PRECACHE = [
   "./",
   "./index.html",
   "./site.webmanifest",
   "./css/colors.css?v=20260812-1",
-  "./css/styles.css?v=20260813-16",
+  "./css/styles.css?v=20260819-10",
   "./js/theme-init.js?v=20260813-1",
   "./js/vendor/supabase.js?v=2.49.8",
   "./js/workspaces.js?v=20260813-17",
-  "./js/script.js?v=20260813-28",
+  "./js/script.js?v=20260819-3",
   "./js/workspace-tabs.js?v=20260813-12",
   "./icons/favicon.svg",
   "./icons/icon-192.png",
@@ -75,6 +75,15 @@ function isAboutNavigation(url) {
   );
 }
 
+/** Email confirm / OAuth callbacks — let the browser follow redirects natively. */
+function isAuthCallbackNavigation(url) {
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+  if (path === "/auth/confirm" || path.startsWith("/auth/")) return true;
+  if (url.searchParams.has("token_hash")) return true;
+  if (url.searchParams.has("code")) return true;
+  return false;
+}
+
 async function navigationFallback(request) {
   const url = new URL(request.url);
 
@@ -115,9 +124,15 @@ self.addEventListener("fetch", (event) => {
 
   // Navigations: network first, route-aware offline fallback.
   if (req.mode === "navigate") {
+    // Don't intercept auth callbacks — fetch() would follow a redirect to
+    // index.html while leaving the document URL at /auth/confirm, which
+    // breaks relative assets. Let the browser redirect to `/` natively.
+    if (isAuthCallbackNavigation(url)) return;
+
     event.respondWith(
       fetch(req)
         .then((res) => {
+          if (!res.ok) return navigationFallback(req);
           const copy = res.clone();
           caches.open(CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
           return res;

@@ -28,6 +28,8 @@ The anon key is public by design; row-level security must protect user data.
 | 1 | `db/2026-05-26-workspaces.sql` | `workspaces` table, `tasks.workspace_id`, RLS policies |
 | 2 | `db/2026-05-27-task-position.sql` | `tasks.position` column + index for list ordering |
 | 3 | `db/2026-08-13-workspace-is-default.sql` | Optional `workspaces.is_default` flag |
+| 4 | `db/2026-08-13-workspace-integrity.sql` | Task/workspace ownership integrity |
+| 5 | `db/2026-08-19-task-is-main.sql` | `tasks.is_main` for this week’s main thing |
 
 Each file is idempotent (`if not exists`, safe to re-run).
 

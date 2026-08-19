@@ -479,6 +479,33 @@ h1 {
   pointer-events: none;
 }
 
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(1.25em + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 201;
+  max-width: calc(100vw - 2em);
+  padding: 0.55em 1em;
+  border-radius: 999em;
+  background: color-mix(in oklab, var(--color-text) 88%, transparent);
+  color: var(--color-background);
+  font-size: 0.85em;
+  line-height: 1.2;
+  text-align: center;
+  box-shadow: 0 0.25em 0.75em rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.app-toast[hidden] {
+  display: block;
+  opacity: 0;
+  transform: translate(-50%, 0.5em);
+  pointer-events: none;
+}
+
 /* Sidebar */
 .sidebar-overlay {
   position: fixed;
@@ -1006,18 +1033,28 @@ h1 {
 }
 
 .task-row-actions .task-commit,
-.task-row-actions .task-delete {
+.task-row-actions .task-delete,
+.task-row-actions .task-star,
+.task-row-actions .task-indent {
   font: inherit;
   color: inherit;
   background: transparent;
   border-radius: 0.4em;
   border: 0.07em solid var(--color-border);
   padding: 0;
+  margin: 0;
   cursor: pointer;
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.task-row-actions .task-star {
+  position: relative;
 }
 
 .sidebar-actions button:disabled {
@@ -1129,6 +1166,28 @@ h1 {
   margin: 0;
 }
 
+.main-thing {
+  flex: 0 0 auto;
+  margin-bottom: 3em;
+  min-width: 0;
+}
+
+.main-thing-root {
+  min-height: 0;
+  position: relative;
+  cursor: default;
+}
+
+.main-thing-root .tasks-list {
+  min-height: 0;
+  padding-top: 0.5em;
+  padding-bottom: 0.3em;
+}
+
+.main-thing-empty {
+  min-height: 2.2em;
+}
+
 .tasks-field-action {
   font-family: inherit;
   font-size: 0.65em;
@@ -1161,6 +1220,14 @@ h1 {
   cursor: default;
   opacity: 0.35;
   background: transparent;
+}
+
+.tasks-field-action[hidden] {
+  display: none !important;
+}
+
+.tasks-field--guest .main-thing {
+  display: none;
 }
 
 .tasks-field--guest .tasks-field-root {
@@ -1618,6 +1685,8 @@ h1 {
   .day-rect:has(.task-row:has(.task-commit:focus)),
   .day-rect:has(.task-row:has(.task-delete:focus)),
   .day-rect:has(.task-row:has(.task-color:focus)),
+  .day-rect:has(.task-row:has(.task-star:focus)),
+  .day-rect:has(.task-row:has(.task-indent:focus)),
   .day-rect:has(.task-row:has(.task-drag-handle:focus)),
   .day-rect:has(.task-row.task-row-reorder-active),
   .day-rect:has(.task-row.task-row-color-open),
@@ -1625,6 +1694,8 @@ h1 {
   .tasks-field:has(.task-row:has(.task-commit:focus)),
   .tasks-field:has(.task-row:has(.task-delete:focus)),
   .tasks-field:has(.task-row:has(.task-color:focus)),
+  .tasks-field:has(.task-row:has(.task-star:focus)),
+  .tasks-field:has(.task-row:has(.task-indent:focus)),
   .tasks-field:has(.task-row:has(.task-drag-handle:focus)),
   .tasks-field:has(.task-row.task-row-reorder-active),
   .tasks-field:has(.task-row.task-row-color-open) {
@@ -1725,6 +1796,8 @@ h1 {
 .task-row:has(.task-commit:focus),
 .task-row:has(.task-delete:focus),
 .task-row:has(.task-color:focus),
+.task-row:has(.task-star:focus),
+.task-row:has(.task-indent:focus),
 .task-row:has(.task-drag-handle:focus),
 .task-row.task-row-reorder-active,
 .task-row.task-row-dragging,
@@ -1793,6 +1866,8 @@ h1 {
 .task-row:has(.task-commit:focus) .task-row-actions,
 .task-row:has(.task-delete:focus) .task-row-actions,
 .task-row:has(.task-color:focus) .task-row-actions,
+.task-row:has(.task-star:focus) .task-row-actions,
+.task-row:has(.task-indent:focus) .task-row-actions,
 .task-row:has(.task-drag-handle:focus) .task-row-actions,
 .task-row.task-row-reorder-active .task-row-actions,
 .task-row.task-row-dragging .task-row-actions,
@@ -1895,7 +1970,9 @@ body:has(.task-row-dragging) > .task-row-actions.is-mobile-portaled {
 
 .task-row-actions .task-commit,
 .task-row-actions .task-delete,
-.task-row-actions .task-color {
+.task-row-actions .task-color,
+.task-row-actions .task-star,
+.task-row-actions .task-indent {
   width: 1.65em;
   height: 1.2em;
   min-width: 1.65em;
@@ -1906,6 +1983,8 @@ body:has(.task-row-dragging) > .task-row-actions.is-mobile-portaled {
 .task-commit,
 .task-delete,
 .task-color,
+.task-star,
+.task-indent,
 .task-drag-handle {
   flex: 0 0 auto;
   color: var(--color-text);
@@ -2039,13 +2118,17 @@ body:has(.task-row-dragging) > .task-row-actions.is-mobile-portaled {
 
 .task-row[data-color] .task-commit,
 .task-row[data-color] .task-delete,
-.task-row[data-color] .task-color {
+.task-row[data-color] .task-color,
+.task-row[data-color] .task-star,
+.task-row[data-color] .task-indent {
   color: #1a1a1a;
   border-color: rgba(0, 0, 0, 0.35);
 }
 
 .task-row[data-color] .task-commit::after,
 .task-row[data-color] .task-delete::after,
+.task-row[data-color] .task-star::after,
+.task-row[data-color] .task-indent::after,
 .task-row[data-color] .task-drag-handle-icon {
   background-color: #1a1a1a;
 }
@@ -2083,13 +2166,17 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 
 html[data-task-highlights="dark"] .task-row[data-color] .task-commit,
 html[data-task-highlights="dark"] .task-row[data-color] .task-delete,
-html[data-task-highlights="dark"] .task-row[data-color] .task-color {
+html[data-task-highlights="dark"] .task-row[data-color] .task-color,
+html[data-task-highlights="dark"] .task-row[data-color] .task-star,
+html[data-task-highlights="dark"] .task-row[data-color] .task-indent {
   color: #f0f2f4;
   border-color: rgba(255, 255, 255, 0.35);
 }
 
 html[data-task-highlights="dark"] .task-row[data-color] .task-commit::after,
 html[data-task-highlights="dark"] .task-row[data-color] .task-delete::after,
+html[data-task-highlights="dark"] .task-row[data-color] .task-star::after,
+html[data-task-highlights="dark"] .task-row[data-color] .task-indent::after,
 html[data-task-highlights="dark"] .task-row[data-color] .task-drag-handle-icon {
   background-color: #f0f2f4;
 }
@@ -2102,13 +2189,17 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
    so buttons inside it follow the theme colors regardless of the row color. */
 .task-row[data-color] .task-row-actions .task-commit,
 .task-row[data-color] .task-row-actions .task-delete,
-.task-row[data-color] .task-row-actions .task-color {
+.task-row[data-color] .task-row-actions .task-color,
+.task-row[data-color] .task-row-actions .task-star,
+.task-row[data-color] .task-row-actions .task-indent {
   color: var(--color-text);
   border-color: color-mix(in srgb, var(--color-text) 35%, transparent);
 }
 
 .task-row[data-color] .task-row-actions .task-commit::after,
 .task-row[data-color] .task-row-actions .task-delete::after,
+.task-row[data-color] .task-row-actions .task-star::after,
+.task-row[data-color] .task-row-actions .task-indent::after,
 .task-row[data-color] .task-row-actions .task-drag-handle-icon {
   background-color: var(--color-text);
 }
@@ -2119,21 +2210,31 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
 
 .task-row:has(.task-text:focus) .task-commit,
 .task-row:has(.task-text:focus) .task-delete,
+.task-row:has(.task-text:focus) .task-star,
 .task-row:has(.task-text:focus) .task-drag-handle,
 .task-row:has(.task-commit:focus) .task-commit,
 .task-row:has(.task-commit:focus) .task-delete,
+.task-row:has(.task-commit:focus) .task-star,
 .task-row:has(.task-commit:focus) .task-drag-handle,
 .task-row:has(.task-delete:focus) .task-commit,
 .task-row:has(.task-delete:focus) .task-delete,
+.task-row:has(.task-delete:focus) .task-star,
 .task-row:has(.task-delete:focus) .task-drag-handle,
+.task-row:has(.task-star:focus) .task-commit,
+.task-row:has(.task-star:focus) .task-delete,
+.task-row:has(.task-star:focus) .task-star,
+.task-row:has(.task-star:focus) .task-drag-handle,
 .task-row:has(.task-drag-handle:focus) .task-commit,
 .task-row:has(.task-drag-handle:focus) .task-delete,
+.task-row:has(.task-drag-handle:focus) .task-star,
 .task-row:has(.task-drag-handle:focus) .task-drag-handle,
 .task-row.task-row-reorder-active .task-commit,
 .task-row.task-row-reorder-active .task-delete,
+.task-row.task-row-reorder-active .task-star,
 .task-row.task-row-reorder-active .task-drag-handle,
 .task-row.task-row-dragging .task-commit,
 .task-row.task-row-dragging .task-delete,
+.task-row.task-row-dragging .task-star,
 .task-row.task-row-dragging .task-drag-handle {
   opacity: 0.8;
 }
@@ -2156,6 +2257,63 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   background-color: var(--color-text);
   -webkit-mask: url("../trash.svg") center / contain no-repeat;
   mask: url("../trash.svg") center / contain no-repeat;
+}
+
+.task-row-actions .task-star::after {
+  content: "";
+  display: block;
+  width: 1.05em;
+  height: 1.05em;
+  background-color: var(--color-text);
+  -webkit-mask: url("../star.svg?v=2") center / contain no-repeat;
+  mask: url("../star.svg?v=2") center / contain no-repeat;
+}
+
+.task-row-actions .task-indent::after {
+  content: "";
+  display: block;
+  width: 0.82em;
+  height: 0.82em;
+  background-color: var(--color-text);
+  -webkit-mask: url("../subtask.svg") center / contain no-repeat;
+  mask: url("../subtask.svg") center / contain no-repeat;
+}
+
+.task-row:has(.task-text:focus) .task-indent:hover,
+.task-row:has(.task-commit:focus) .task-indent:hover,
+.task-row:has(.task-delete:focus) .task-indent:hover,
+.task-row:has(.task-color:focus) .task-indent:hover,
+.task-row:has(.task-star:focus) .task-indent:hover,
+.task-row:has(.task-indent:focus) .task-indent:hover,
+.task-row:has(.task-drag-handle:focus) .task-indent:hover,
+.task-row.task-row-reorder-active .task-indent:hover,
+.task-row.task-row-dragging .task-indent:hover {
+  color: var(--color-text);
+  border-color: var(--color-text);
+  opacity: 1;
+}
+
+.task-star.is-on::before {
+  content: "";
+  position: absolute;
+  width: 1.15em;
+  height: 0.09em;
+  background: var(--color-text);
+  border-radius: 999em;
+  transform: rotate(-38deg);
+  pointer-events: none;
+}
+
+.task-row:has(.task-text:focus) .task-star:hover,
+.task-row:has(.task-commit:focus) .task-star:hover,
+.task-row:has(.task-delete:focus) .task-star:hover,
+.task-row:has(.task-star:focus) .task-star:hover,
+.task-row:has(.task-drag-handle:focus) .task-star:hover,
+.task-row.task-row-reorder-active .task-star:hover,
+.task-row.task-row-dragging .task-star:hover {
+  color: var(--color-text);
+  border-color: var(--color-text);
+  opacity: 1;
 }
 
 .task-row:has(.task-text:focus) .task-delete:hover,
@@ -2437,6 +2595,8 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   .task-row-actions .task-commit,
   .task-row-actions .task-delete,
   .task-row-actions .task-color,
+  .task-row-actions .task-star,
+  .task-row-actions .task-indent,
   .task-row-actions .task-drag-handle {
     width: 2em;
     height: 2em;
@@ -2448,6 +2608,16 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   .task-row-actions .task-delete::after {
     width: 0.88em;
     height: 0.88em;
+  }
+
+  .task-row-actions .task-star::after {
+    width: 1.15em;
+    height: 1.15em;
+  }
+
+  .task-row-actions .task-indent::after {
+    width: 0.92em;
+    height: 0.92em;
   }
 
   .task-row-actions .task-color-dot {
@@ -2484,6 +2654,8 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   .task-row:has(.task-commit:focus),
   .task-row:has(.task-delete:focus),
   .task-row:has(.task-color:focus),
+  .task-row:has(.task-star:focus),
+  .task-row:has(.task-indent:focus),
   .task-row:has(.task-drag-handle:focus),
   .task-row.task-row-reorder-active,
   .task-row.task-row-dragging,
@@ -2497,6 +2669,8 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   .task-row.task-row-sub:has(.task-commit:focus),
   .task-row.task-row-sub:has(.task-delete:focus),
   .task-row.task-row-sub:has(.task-color:focus),
+  .task-row.task-row-sub:has(.task-star:focus),
+  .task-row.task-row-sub:has(.task-indent:focus),
   .task-row.task-row-sub:has(.task-drag-handle:focus),
   .task-row.task-row-sub.task-row-reorder-active,
   .task-row.task-row-sub.task-row-dragging,
@@ -2562,6 +2736,8 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   .task-row-actions .task-commit,
   .task-row-actions .task-delete,
   .task-row-actions .task-color,
+  .task-row-actions .task-star,
+  .task-row-actions .task-indent,
   .task-row-actions .task-drag-handle {
     flex: 1 1 0;
     width: auto;
@@ -2578,6 +2754,16 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
 
   .task-row-actions .task-commit::after,
   .task-row-actions .task-delete::after {
+    width: 1em;
+    height: 1em;
+  }
+
+  .task-row-actions .task-star::after {
+    width: 1.25em;
+    height: 1.25em;
+  }
+
+  .task-row-actions .task-indent::after {
     width: 1em;
     height: 1em;
   }
