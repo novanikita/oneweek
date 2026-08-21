@@ -1839,17 +1839,22 @@ h1 {
   display: none;
   position: absolute;
   top: calc(100% + 0.3em);
-  left: 50%;
-  transform: translateX(-50%);
+  /* Stay inside the row: day cells clip overflow-x, and 6 buttons no longer
+     fit when the popover is centered at intrinsic width. */
+  left: 0;
+  right: 0;
+  transform: none;
   flex-direction: row;
   flex-wrap: nowrap;
-  gap: 0.4em;
+  justify-content: center;
+  gap: 0.28em;
   align-items: center;
-  padding: 0.35em 0.45em;
+  padding: 0.3em 0.35em;
+  box-sizing: border-box;
+  max-width: 100%;
   background: var(--color-background);
   border: 0.07em solid var(--color-border);
   border-radius: 0.55em;
-  box-shadow: 0 0.4em 1em rgba(0, 0, 0, 0.12);
   pointer-events: none;
   z-index: 6;
   white-space: nowrap;
@@ -1972,12 +1977,20 @@ body:has(.task-row-dragging) > .task-row-actions.is-mobile-portaled {
 .task-row-actions .task-delete,
 .task-row-actions .task-color,
 .task-row-actions .task-star,
-.task-row-actions .task-indent {
+.task-row-actions .task-indent,
+.task-row-actions .task-drag-handle {
+  flex: 0 1 1.65em;
   width: 1.65em;
+  max-width: 1.65em;
   height: 1.2em;
-  min-width: 1.65em;
+  min-width: 0;
   min-height: 1.2em;
   padding: 0;
+}
+
+.task-row-actions .task-drag-handle {
+  border: 0.07em solid color-mix(in srgb, var(--color-text) 35%, transparent);
+  border-radius: 0.4em;
 }
 
 .task-commit,
@@ -1986,7 +1999,6 @@ body:has(.task-row-dragging) > .task-row-actions.is-mobile-portaled {
 .task-star,
 .task-indent,
 .task-drag-handle {
-  flex: 0 0 auto;
   color: var(--color-text);
   opacity: 0.8;
   border-color: color-mix(in srgb, var(--color-text) 35%, transparent);
@@ -2588,8 +2600,8 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   }
 
   .task-row-actions {
-    gap: 0.45em;
-    padding: 0.4em 0.55em;
+    gap: 0.35em;
+    padding: 0.35em 0.4em;
   }
 
   .task-row-actions .task-commit,
@@ -2598,10 +2610,12 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   .task-row-actions .task-star,
   .task-row-actions .task-indent,
   .task-row-actions .task-drag-handle {
+    flex: 0 1 2em;
     width: 2em;
-    height: 2em;
-    min-width: 2em;
-    min-height: 2em;
+    max-width: 2em;
+    height: 1.65em;
+    min-width: 0;
+    min-height: 1.65em;
   }
 
   .task-row-actions .task-commit::after,
