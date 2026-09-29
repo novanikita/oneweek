@@ -12,6 +12,14 @@ python3 -m http.server 8080
 
 Then open `http://localhost:8080/index.html`.
 
+## Tests
+
+Pure task-list logic lives in `js/task-model.js` and is covered by Node's built-in test runner (Node 18+, no dependencies):
+
+```bash
+node --test tests/
+```
+
 ## Supabase setup
 
 1. Create a Supabase project.
