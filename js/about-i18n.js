@@ -29,9 +29,6 @@
         "Every feature that exists today and everything we add later stays free for everyone.",
       "free.3": "No spam or newsletters — your email is only for signing in and saving your tasks.",
       "cta.try": "Try now",
-      "reviews.heading": "User feedback board",
-      "reviews.body":
-        "Reviews here aren't moderated: I don't delete negative ones or make up positive ones. Anyone who used oneweek for more than a week can leave a review.",
     },
     ru: {
       "meta.title": "О oneweek",
@@ -61,9 +58,6 @@
       "free.3":
         "Никакого спама и\u00A0рассылок: ваша почта нужна только для\u00A0входа и\u00A0сохранения задач.",
       "cta.try": "Попробовать",
-      "reviews.heading": "Доска отзывов",
-      "reviews.body":
-        "Отзывы здесь не\u00A0модерируются: я\u00A0не\u00A0удаляю плохие и\u00A0не\u00A0выдумываю хорошие. Оставить отзыв может каждый, кто пользовался oneweek больше одной недели.",
     },
   };
 

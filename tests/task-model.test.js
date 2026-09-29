@@ -204,3 +204,27 @@ test("drag payload carries the subtree with source positions", () => {
   assert.deepEqual(texts(target), ["y", "a", "  a1"]);
   assert.deepEqual(inserted.map((x) => x.dbId), ["A", "A1"]);
 });
+
+test("sortTimedTasks: done timed rows do not take open slots", () => {
+  const list = [t("14:00 late"), t("untimed"), t("09:00 early"), t("done 08:00", { done: true })];
+  assert.deepEqual(texts(m.sortTimedTasks(list)), ["09:00 early", "untimed", "14:00 late", "done 08:00"]);
+});
+
+test("sortTimedTasks: subtasks sort by time, open before done", () => {
+  const list = [t("a"), t("15:00 s", { sub: true }), t("08:00 d", { sub: true, done: true }), t("09:00 s", { sub: true })];
+  assert.deepEqual(texts(m.sortTimedTasks(list)), ["a", "  09:00 s", "  15:00 s", "  08:00 d"]);
+});
+
+test("carryForwardRowsToCopy skips a group whose main already exists", () => {
+  const last = [
+    { content: "Project", is_subtask: false, completed: false },
+    { content: "step 1", is_subtask: true, completed: false },
+    { content: "Other", is_subtask: false, completed: false },
+    { content: "o1", is_subtask: true, completed: false },
+  ];
+  const current = [{ content: "Project", is_subtask: false }];
+  assert.deepEqual(
+    m.carryForwardRowsToCopy(last, current).map((r) => `${r.is_subtask ? "  " : ""}${r.content}`),
+    ["Other", "  o1"]
+  );
+});

@@ -365,6 +365,98 @@
     await sleep(800);
   }
 
+  /** Fixed behaviors: paste siblings, cleared-task delete + undo, time sort, star race, carry-forward groups. */
+  async function scenario4() {
+    for (let i = 0; i < 100 && !general().querySelector(".tasks-list"); i++) await sleep(50);
+    await sleep(300);
+    const dbTexts = () => window.__fakeDb.tasks.filter((t) => t.date === window.__fakeDb.tasks.at(-1)?.date);
+
+    log("last week: Proj > step, Other > o1");
+    await click($("#week-prev"));
+    await sleep(500);
+    await clickEmpty(general());
+    await type("Proj");
+    await key("Enter");
+    await type("step");
+    await key("Tab");
+    await key("Enter");
+    await key("Enter");
+    await type("Other");
+    await key("Enter");
+    await type("o1");
+    await key("Tab");
+    await blur();
+    await click($("#week-next"));
+    await sleep(500);
+
+    log("this week: P > p1, p2");
+    await clickEmpty(general());
+    await type("P");
+    await key("Enter");
+    await type("p1");
+    await key("Tab");
+    await key("Enter");
+    await type("p2");
+    await blur();
+
+    log("paste into subtask p1");
+    await focus(row(general(), "p1"));
+    await paste("p1\nq1\nq2");
+    await sleep(300);
+    checkpoints.pasteSub = { ...snapshot(), active: document.activeElement?.value };
+    await blur();
+
+    log("paste into parent P (blank line skipped)");
+    await focus(row(general(), "P"));
+    await paste("P\nR\n\n  \nS");
+    await sleep(300);
+    checkpoints.pasteMain = snapshot();
+    await blur();
+
+    log("clear saved S -> deleted; undo restores its text");
+    await focus(row(general(), "S"));
+    await type("");
+    await blur();
+    await sleep(300);
+    checkpoints.cleared = { ...snapshot(), undoHint: !$("#undo-hint").hidden };
+    await undo();
+    await sleep(300);
+    checkpoints.clearedUndo = snapshot();
+
+    log("clear parent P with subtasks -> kept as empty heading");
+    await focus(row(general(), "P"));
+    await type("");
+    await blur();
+    await sleep(300);
+    checkpoints.clearedParent = snapshot();
+
+    log("monday: done timed task keeps open order");
+    await clickEmpty(day("Monday"));
+    await type("14:00 late");
+    await key("Enter");
+    await type("untimed");
+    await key("Enter");
+    await type("9:00 early");
+    await key("Enter");
+    await type("8:00 done");
+    await blur();
+    await click(row(day("Monday"), "08:00 done").querySelector(".task-checkbox"));
+    checkpoints.timed = snapshot();
+
+    log("two quick stars");
+    row(general(), "R").querySelector(".task-star").click();
+    row(general(), "S").querySelector(".task-star").click();
+    await sleep(1000);
+    checkpoints.stars = snapshot();
+
+    log("this week gets Proj (no subs); move remaining copies Other > o1 only");
+    await clickEmpty(general());
+    await type("Proj");
+    await blur();
+    await click($("#tasks-move-remaining"));
+    await sleep(1500);
+  }
+
   function finish(error) {
     const pre = document.createElement("pre");
     pre.id = "out";
@@ -380,7 +472,7 @@
   }
 
   window.addEventListener("load", () => {
-    const which = { 2: scenario2, 3: scenario3 }[new URLSearchParams(location.search).get("s")] || scenario;
+    const which = { 2: scenario2, 3: scenario3, 4: scenario4 }[new URLSearchParams(location.search).get("s")] || scenario;
     which().then(() => finish(null), (err) => finish(err));
   });
 })();

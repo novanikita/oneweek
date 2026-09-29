@@ -183,8 +183,13 @@ function createTaskPanel(cfg) {
     const color = normalizeTaskColor(source.color);
     const dbId = source.dbId ?? task.dbId ?? null;
 
-    // Never auto-delete on empty text; an empty draft without dbId is a no-op.
-    if (isTaskEmptyText(content) && !dbId) return;
+    // Empty text is never written: a draft is not inserted, and a cleared
+    // saved task is deleted on commit — unless it still heads subtasks.
+    if (isTaskEmptyText(content)) {
+      if (!dbId) return;
+      const at = taskIndexInList(state.tasks, task);
+      if (at === -1 || !mainTaskHasSubtasks(state.tasks, at)) return;
+    }
 
     const idx = taskIndexInList(state.tasks, task);
     const position = idx >= 0 ? idx : state.tasks.length;
@@ -204,6 +209,7 @@ function createTaskPanel(cfg) {
         throw error;
       }
       markNetworkSuccess();
+      task.savedText = content;
       return;
     }
 
@@ -235,6 +241,7 @@ function createTaskPanel(cfg) {
     markNetworkSuccess();
     task.dbId = data?.id ?? null;
     task.position = position;
+    task.savedText = content;
   }
 
   const persistTask = createPersistTask(
@@ -262,10 +269,13 @@ function createTaskPanel(cfg) {
   // --- Loading -----------------------------------------------------------
 
   function taskFromRow(row, i) {
+    const text = normalizeText(row.text ?? "");
     return {
       id: newRowId(),
       dbId: row.dbId ?? null,
-      text: normalizeText(row.text ?? ""),
+      text,
+      /** Last text known to be in the DB (undo of a cleared task restores it). */
+      savedText: row.dbId && !row.dirty ? text : undefined,
       checked: !!row.checked,
       subtask: !!row.subtask,
       color: normalizeTaskColor(row.color),
@@ -430,11 +440,23 @@ function createTaskPanel(cfg) {
     render();
   }
 
+  /** Main-thing changes await DB writes; run them one at a time so two quick
+   *  stars can't both end up flagged (the DB allows one per week). */
+  let mainThingQueue = Promise.resolve();
+  function enqueueMainThing(fn) {
+    mainThingQueue = mainThingQueue.then(fn).catch((err) => {
+      console.error("Main thing update failed:", err);
+    });
+    return mainThingQueue;
+  }
+
   function toggleMainThing(taskId) {
-    const idx = resolveMainPromoteIndex(taskId);
-    if (idx === -1) return;
-    if (getMainThingIndex(state.tasks) === idx) void unstarMainThing();
-    else void promoteToMainThing(taskId);
+    return enqueueMainThing(() => {
+      const idx = resolveMainPromoteIndex(taskId);
+      if (idx === -1) return;
+      if (getMainThingIndex(state.tasks) === idx) return unstarMainThing();
+      return promoteToMainThing(taskId);
+    });
   }
 
   function eventHitsMainThing(e) {
@@ -453,31 +475,37 @@ function createTaskPanel(cfg) {
 
   // --- Edits ---------------------------------------------------------------
 
-  function removeTaskRow(taskId) {
-    const idx = getTaskIndex(taskId);
-    if (idx === -1) return;
-    const { start, count } = getTaskSubtreeSpan(state.tasks, idx);
-    const toRemove = state.tasks.slice(start, start + count);
-
+  /** Delete saved rows from the DB with a Cmd/Ctrl+Z undo entry. */
+  function deleteWithUndo(position, rows) {
     oneweekPushUndo({
       blockId,
       type: "delete-subtree",
       address: getAddress(),
       workspaceId: getActiveWorkspaceId(),
       userId,
-      position: start,
-      snapshots: toRemove.map(cloneTaskSnapshot),
+      position,
+      snapshots: rows.map((t) => ({
+        ...cloneTaskSnapshot(t),
+        text: isTaskEmptyText(t.text) ? t.savedText ?? "" : t.text,
+      })),
     });
-
     trackPendingTaskDeletes(
-      Promise.allSettled(toRemove.filter((t) => t.dbId).map((t) => deleteTaskFromDb(t)))
+      Promise.allSettled(rows.filter((t) => t.dbId).map((t) => deleteTaskFromDb(t)))
     );
+    showUndoDeleteHint();
+  }
+
+  function removeTaskRow(taskId) {
+    const idx = getTaskIndex(taskId);
+    if (idx === -1) return;
+    const { start, count } = getTaskSubtreeSpan(state.tasks, idx);
+    const toRemove = state.tasks.slice(start, start + count);
+    deleteWithUndo(start, toRemove);
     state.focusAfterRender = null;
     state.tasks.splice(start, count);
     pruneCollapsedSubtaskStorage(state.tasks, toRemove, getActiveWorkspaceId());
     state.tasks = settle(state.tasks);
     schedulePersistTaskPositions();
-    showUndoDeleteHint();
     render();
   }
 
@@ -519,7 +547,12 @@ function createTaskPanel(cfg) {
     return true;
   });
 
-  async function syncTaskFromInput(taskId) {
+  /**
+   * Copy the field's text into state and save it. A cleared task is dropped
+   * (drafts) or, on `commit`, deleted with undo; mere flushes (tab hidden)
+   * leave that decision to the commit so a half-retyped task survives.
+   */
+  async function syncTaskFromInput(taskId, { commit = false } = {}) {
     const idx = getTaskIndex(taskId);
     if (idx === -1) return { needRender: true };
     const input = findRow(taskId)?.querySelector(".task-text");
@@ -535,13 +568,19 @@ function createTaskPanel(cfg) {
       state.tasks.splice(idx, 1);
       return { needRender: true };
     }
+    if (isTaskEmptyText(text) && !mainTaskHasSubtasks(state.tasks, idx)) {
+      if (!commit) return { needRender: false };
+      removeTaskRow(taskId);
+      return { needRender: false, removed: true };
+    }
     // Not awaited: the UI would freeze for a network round-trip per blur.
     void persistTask(task);
     return { needRender: false };
   }
 
   async function commitTask(taskId) {
-    const { needRender } = await syncTaskFromInput(taskId);
+    const { needRender, removed } = await syncTaskFromInput(taskId, { commit: true });
+    if (removed) return false;
     state.tasks = settle(state.tasks);
     schedulePersistTaskPositions();
 
@@ -587,13 +626,14 @@ function createTaskPanel(cfg) {
     render();
   }
 
-  /** Click on empty list area: reuse an empty open draft or insert one, then focus. */
+  /** Click on empty list area: reuse an unsaved empty draft or insert one, then focus. */
   function beginNewTaskFromEmptyClick() {
     void flushAllTaskSaves();
     const insertAt = insertIndexForNewOpenMain(state.tasks);
     for (let i = insertAt - 1; i >= 0; i--) {
       const t = state.tasks[i];
-      if (!t.checked && !t.subtask && isTaskEmptyText(t.text)) {
+      // Not a saved row: a cleared parent kept for its subtasks is not a draft.
+      if (!t.checked && !t.subtask && !t.dbId && isTaskEmptyText(t.text)) {
         state.focusAfterRender = { id: t.id };
         render();
         return;
@@ -605,20 +645,30 @@ function createTaskPanel(cfg) {
     render();
   }
 
+  /**
+   * Multi-line paste: the first line goes into the current row, the rest
+   * become its siblings (subtasks under the same parent, or tasks after the
+   * current task's subtasks). Blank lines are skipped. Saved right away.
+   */
   function splitPasteIntoTasks(currentId, text) {
     const idx = getTaskIndex(currentId);
     if (idx === -1) return;
+    const current = state.tasks[idx];
     const lines = text.split(/\r?\n/);
-    state.tasks[idx].text = normalizeText(lines[0] ?? "");
-    markTaskDirty(state.tasks[idx]);
-    const toInsert = lines.slice(1).map((line) => {
-      const t = createTask(normalizeText(line ?? ""), false, null, false);
-      markTaskDirty(t);
-      return t;
-    });
-    state.tasks.splice(insertIndexBelowRowUncheckedFirst(state.tasks, idx), 0, ...toInsert);
+    current.text = normalizeText(lines[0] ?? "");
+    const toInsert = lines
+      .slice(1)
+      .filter((line) => !isTaskEmptyText(line))
+      .map((line) => createTask(normalizeText(line), false, null, current.subtask));
+    state.tasks.splice(insertIndexAfterEnterContinue(state.tasks, idx), 0, ...toInsert);
+    normalizeSubtaskFlags(state.tasks);
     state.tasks = settle(state.tasks);
-    state.focusAfterRender = { id: toInsert[0]?.id ?? currentId };
+    for (const t of [current, ...toInsert]) {
+      if (isTaskEmptyText(t.text)) continue;
+      markTaskDirty(t);
+      void persistTask(t);
+    }
+    state.focusAfterRender = { id: toInsert[toInsert.length - 1]?.id ?? currentId };
     schedulePersistTaskPositions();
     render();
   }
@@ -640,7 +690,7 @@ function createTaskPanel(cfg) {
 
     if (empty && wasSub) {
       const parentId = getParentMainTaskId(state.tasks, idx);
-      if (task.dbId) void deleteTaskFromDb(task);
+      if (task.dbId) deleteWithUndo(idx, [task]);
       state.tasks.splice(idx, 1);
       const neu = createTask("", false, null, false);
       state.tasks.splice(insertIndexAfterEnterExitSub(state.tasks, parentId), 0, neu);
@@ -713,7 +763,7 @@ function createTaskPanel(cfg) {
     if (mainThing) {
       const fromInMain = indexIsInMainThingSpan(state.tasks, fromIdx);
       if (overMain && !fromInMain) {
-        void promoteToMainThing(fromId);
+        void enqueueMainThing(() => promoteToMainThing(fromId));
         return;
       }
       if (!overMain && fromInMain) {
@@ -1387,6 +1437,7 @@ function createTaskPanel(cfg) {
   return {
     blockId,
     setAuthUser,
+    reload: () => (isAuthed ? load() : undefined),
     appendPersistedRows,
     getTaskCount: () => state.tasks.length,
   };
@@ -1503,10 +1554,7 @@ function setupMoveRemaining(generalPanel) {
     }
     markNetworkSuccess();
 
-    const existingFp = new Set((existingCurrent ?? []).map(carryForwardFingerprint));
-    const toCopy = expandCarryForwardGroups(rows).filter(
-      (r) => !existingFp.has(carryForwardFingerprint(r))
-    );
+    const toCopy = carryForwardRowsToCopy(rows, existingCurrent);
     if (toCopy.length === 0) {
       markDone(currentWeekIso, workspaceId);
       return;
@@ -1663,6 +1711,21 @@ function setupMoveRemaining(generalPanel) {
       })
     );
   }
+
+  // Coming back to the app: re-read so edits from other devices show up.
+  // Skipped while a task field is being edited (a re-render would drop it).
+  const REFRESH_MIN_INTERVAL_MS = 15000;
+  let lastRefreshAt = Date.now();
+  function refreshOnReturn() {
+    if (document.visibilityState !== "visible") return;
+    if (Date.now() - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return;
+    if (document.activeElement?.classList?.contains("task-text")) return;
+    if (window.__dragTaskPayload) return;
+    lastRefreshAt = Date.now();
+    for (const panel of panels) void panel.reload();
+  }
+  document.addEventListener("visibilitychange", refreshOnReturn);
+  window.addEventListener("focus", refreshOnReturn);
 
   // Locked until the session is resolved.
   setTasksInteractivity(false);

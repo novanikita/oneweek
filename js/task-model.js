@@ -291,6 +291,22 @@ function expandCarryForwardGroups(rows) {
   return out;
 }
 
+/**
+ * Last week's rows to copy into this week: unfinished groups whose main is
+ * not on this week's list yet. A group is skipped whole, so its subtasks can
+ * never land under a different parent.
+ */
+function carryForwardRowsToCopy(lastWeekRows, currentWeekRows) {
+  const existing = new Set((currentWeekRows ?? []).map(carryForwardFingerprint));
+  const out = [];
+  let skipGroup = false;
+  for (const row of expandCarryForwardGroups(lastWeekRows)) {
+    if (!row.is_subtask) skipGroup = existing.has(carryForwardFingerprint(row));
+    if (!skipGroup) out.push(row);
+  }
+  return out;
+}
+
 /** Pair carry-forward payloads with server rows by content fingerprint. */
 function matchCarryForwardInsertRows(toCopy, serverRows) {
   const pool = [...(serverRows ?? [])];
@@ -683,47 +699,36 @@ function moveTimeToStart(text) {
   return rest ? `${timeLabel} ${rest}` : timeLabel;
 }
 
+function compareByTime(a, b) {
+  const ma = parseTimeMinutes(a.text);
+  const mb = parseTimeMinutes(b.text);
+  if (ma == null && mb == null) return 0;
+  if (ma == null) return 1;
+  if (mb == null) return -1;
+  return ma - mb;
+}
+
 /**
- * Day-column ordering: timed groups (main starts with hh:mm) are sorted by
- * time among the slots timed groups already occupy, so untimed rows keep
- * their manual places; subtasks sort by time inside their group. Then the
- * usual open-above / done-below grouping applies.
+ * Day-column ordering: open groups above done ones; within each part, timed
+ * groups (main has hh:mm) are sorted by time among the slots timed groups
+ * already occupy, so untimed rows keep their manual places. Subtasks sort by
+ * time inside their group (open before done).
  */
 function sortTimedTasks(tasks) {
-  const groups = splitIntoTaskGroups(tasks);
-  const tagged = groups.map((group, gi) => {
-    const subs = group.subs.slice().sort((a, b) => {
-      const ma = parseTimeMinutes(a.text);
-      const mb = parseTimeMinutes(b.text);
-      if (ma == null && mb == null) return 0;
-      if (ma == null) return 1;
-      if (mb == null) return -1;
-      return ma - mb;
-    });
-    const mainMinutes = parseTimeMinutes(group.main.text);
-    return {
-      group: { main: group.main, subs },
-      gi,
-      mainMinutes,
-      isTimed: mainMinutes != null,
-    };
-  });
-
-  const untimedQueue = tagged.filter((t) => !t.isTimed);
-  const timedQueue = tagged
-    .filter((t) => t.isTimed)
-    .sort((a, b) => (a.mainMinutes - b.mainMinutes) || (a.gi - b.gi));
-
-  const result = [];
-  for (const group of groups) {
-    const mainMinutes = parseTimeMinutes(group.main.text);
-    const next = mainMinutes != null ? timedQueue.shift() : untimedQueue.shift();
-    if (next) {
-      result.push(next.group.main, ...next.group.subs);
-    }
-  }
-
-  return partitionUncheckedBeforeChecked(result);
+  const groups = splitIntoTaskGroups(tasks).map((g) => ({
+    main: g.main,
+    subs: g.subs.slice().sort(compareByTime),
+  }));
+  const isTimed = (g) => parseTimeMinutes(g.main.text) != null;
+  const slotSort = (list) => {
+    const timed = list.filter(isTimed).sort((a, b) => compareByTime(a.main, b.main));
+    return list.map((g) => (isTimed(g) ? timed.shift() : g));
+  };
+  const open = slotSort(groups.filter((g) => !g.main.checked));
+  const done = slotSort(groups.filter((g) => g.main.checked));
+  return partitionUncheckedBeforeChecked(
+    [...open, ...done].flatMap((g) => [g.main, ...g.subs])
+  );
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -778,5 +783,7 @@ if (typeof module !== "undefined" && module.exports) {
     parseTimeMinutes,
     moveTimeToStart,
     sortTimedTasks,
+    compareByTime,
+    carryForwardRowsToCopy,
   };
 }

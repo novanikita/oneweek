@@ -1,5 +1,5 @@
 /* oneweek app-shell service worker — caches UI assets; never caches API. */
-const CACHE = "oneweek-shell-v15";
+const CACHE = "oneweek-shell-v16";
 
 const REQUIRED_PRECACHE = [
   "./",
@@ -10,9 +10,9 @@ const REQUIRED_PRECACHE = [
   "./js/theme-init.js?v=20260929-1",
   "./js/vendor/supabase.js?v=2.49.8",
   "./js/workspaces.js?v=20260929-1",
-  "./js/task-model.js?v=20260929-1",
+  "./js/task-model.js?v=20260929-2",
   "./js/script.js?v=20260929-3",
-  "./js/task-panel.js?v=20260929-1",
+  "./js/task-panel.js?v=20260929-2",
   "./js/workspace-tabs.js?v=20260929-1",
   "./js/theme-sync.js?v=20260929-1",
   "./icons/favicon.svg",
@@ -26,7 +26,7 @@ const REQUIRED_PRECACHE = [
 const OPTIONAL_PRECACHE = [
   "./about.html",
   "./css/about.css?v=20260813-1",
-  "./js/about-i18n.js?v=20260813-1",
+  "./js/about-i18n.js?v=20260929-1",
 ];
 
 async function precacheRequired(cache) {
