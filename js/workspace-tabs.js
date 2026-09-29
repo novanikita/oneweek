@@ -144,17 +144,11 @@
   async function handleDelete(id) {
     const items = ws.getList();
     if (items.length <= 1) return;
-    if (typeof ws.isDefaultWorkspace === "function" && ws.isDefaultWorkspace(id)) return;
+    if (ws.isDefaultWorkspace(id)) return;
     const item = items.find((w) => w.id === id);
-    const taskCount =
-      typeof ws.countTasks === "function" ? await ws.countTasks(id) : null;
-    const msg =
-      typeof ws.formatDeleteConfirmMessage === "function"
-        ? ws.formatDeleteConfirmMessage(item?.name ?? "", taskCount)
-        : item
-          ? `Delete workspace "${item.name}"?`
-          : "Delete workspace?";
-    if (typeof window.confirm === "function" && !window.confirm(msg)) return;
+    const taskCount = await ws.countTasks(id);
+    const msg = ws.formatDeleteConfirmMessage(item?.name ?? "", taskCount);
+    if (!window.confirm(msg)) return;
     await ws.remove(id);
   }
 
@@ -230,9 +224,7 @@
         { label: "Rename", onClick: () => startRename(item.id) },
         {
           label: "Delete",
-          disabled:
-            items.length <= 1 ||
-            (typeof ws.isDefaultWorkspace === "function" && ws.isDefaultWorkspace(item.id)),
+          disabled: items.length <= 1 || ws.isDefaultWorkspace(item.id),
           onClick: () => void handleDelete(item.id),
         },
       ], tab);
@@ -343,7 +335,6 @@
   const ws = window.oneweekWorkspaces;
   if (!ws) return;
 
-  const MAIN_NAME = "main";
   /** Sentinel value used for the "Add..." pseudo-option at the bottom of
    *  the select. Anything starting with this prefix is treated as "not a
    *  real workspace id" so it can never collide with a UUID. */
@@ -371,12 +362,7 @@
     const next = activeId || items[0]?.id || "";
     if (next) select.value = next;
 
-    const activeItem = items.find((w) => w.id === next);
-    const isDefault =
-      typeof ws.isDefaultWorkspace === "function"
-        ? ws.isDefaultWorkspace(next)
-        : !activeItem || activeItem.name.trim().toLowerCase() === MAIN_NAME;
-    const canDelete = !isDefault && items.length > 1;
+    const canDelete = !ws.isDefaultWorkspace(next) && items.length > 1;
     deleteActions.hidden = !canDelete;
   }
 
@@ -400,19 +386,10 @@
     const items = ws.getList();
     if (items.length <= 1) return;
     const item = items.find((w) => w.id === id);
-    if (
-      !item ||
-      (typeof ws.isDefaultWorkspace === "function" && ws.isDefaultWorkspace(id))
-    ) {
-      return;
-    }
-    const taskCount =
-      typeof ws.countTasks === "function" ? await ws.countTasks(id) : null;
-    const msg =
-      typeof ws.formatDeleteConfirmMessage === "function"
-        ? ws.formatDeleteConfirmMessage(item.name, taskCount)
-        : `Delete workspace "${item.name}"?`;
-    if (typeof window.confirm === "function" && !window.confirm(msg)) return;
+    if (!item || ws.isDefaultWorkspace(id)) return;
+    const taskCount = await ws.countTasks(id);
+    const msg = ws.formatDeleteConfirmMessage(item.name, taskCount);
+    if (!window.confirm(msg)) return;
     await ws.remove(id);
   });
 

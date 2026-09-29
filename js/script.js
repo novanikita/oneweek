@@ -29,11 +29,6 @@ function getVisibleWeekMondayIso() {
   return toIsoDateFromDate(getVisibleWeekStartDate());
 }
 
-/** Calendar “this week” Monday — for one-time migration of legacy rows without `date`. */
-function getCalendarWeekMondayIso() {
-  return toIsoDateFromDate(getWeekMondayStart(new Date(), 0));
-}
-
 function isTaskEmptyText(text) {
   return (text ?? "").trim() === "";
 }
@@ -494,26 +489,6 @@ function getActiveWorkspaceId() {
   }
 }
 
-async function awaitWorkspaceReady(userId) {
-  const ws = window.oneweekWorkspaces;
-  if (!ws) return;
-  if (typeof ws.ensureReadyFor === "function") {
-    try {
-      await ws.ensureReadyFor(userId);
-    } catch {
-      /* already logged */
-    }
-    return;
-  }
-  if (typeof ws.ensureReady === "function") {
-    try {
-      await ws.ensureReady();
-    } catch {
-      /* already logged */
-    }
-  }
-}
-
 const EMAIL_OTP_TYPES = new Set([
   "signup",
   "invite",
@@ -629,16 +604,10 @@ const ONEWEEK_AUTH_CHANGE = "oneweek-auth-change";
 
   async function publish(nextSession) {
     session = nextSession ?? null;
-    const userId = session?.user?.id || null;
-    const ws = window.oneweekWorkspaces;
-    if (ws && typeof ws.applyAuthSession === "function") {
-      try {
-        await ws.applyAuthSession(session);
-      } catch (err) {
-        console.error("Workspace auth apply failed:", err);
-      }
-    } else if (userId) {
-      await awaitWorkspaceReady(userId);
+    try {
+      await window.oneweekWorkspaces.applyAuthSession(session);
+    } catch (err) {
+      console.error("Workspace auth apply failed:", err);
     }
     for (const fn of [...listeners]) {
       try {
@@ -685,9 +654,6 @@ const ONEWEEK_AUTH_CHANGE = "oneweek-auth-change";
 
       await consumeEmailAuthCallback(supabase);
 
-      if (typeof window.oneweekWorkspaces?.init === "function") {
-        await window.oneweekWorkspaces.init({ supabase });
-      }
       const { data } = await supabase.auth.getSession();
       if (
         hadAuthCode &&
@@ -1001,11 +967,6 @@ const TASK_COLOR_PALETTE = [
   "#f3d8e1",
   "#f8dada",
 ];
-
-function isValidTaskColor(color) {
-  if (color == null || color === "") return true;
-  return TASK_COLOR_PALETTE.includes(String(color).toLowerCase());
-}
 
 function normalizeTaskColor(color) {
   if (color == null || color === "") return null;
@@ -1492,35 +1453,6 @@ function computeReorderInsertIndex(fromIndex, targetIndex, insertBefore) {
   return insertAt;
 }
 
-function reorderTaskInArray(tasks, fromIndex, targetIndex, insertBefore) {
-  if (fromIndex < 0 || targetIndex < 0) return null;
-  const insertAt = computeReorderInsertIndex(fromIndex, targetIndex, insertBefore);
-  if (insertAt === fromIndex) return null;
-  const [moved] = tasks.splice(fromIndex, 1);
-  tasks.splice(insertAt, 0, moved);
-  return moved;
-}
-
-/**
- * Same-list drop when the pointer is not on another row (empty padding, spacer,
- * area below the last task). Moves the dragged row to the end of the array —
- * matches the drop indicator's showAtEnd(). Returns the moved task or null.
- */
-function reorderTaskToListEnd(tasks, fromIndex) {
-  if (fromIndex < 0 || fromIndex >= tasks.length - 1) return null;
-  const [moved] = tasks.splice(fromIndex, 1);
-  tasks.push(moved);
-  return moved;
-}
-
-/**
- * Resolve a same-list reorder from a drop event. Prefer the row under the
- * cursor; if the drop landed in empty space, append to the end of the list.
- */
-function reorderTaskFromSameListDrop(tasks, fromId, e, listEl, getTaskIndex) {
-  return reorderSubtreeFromSameListDrop(tasks, fromId, e, listEl, getTaskIndex);
-}
-
 function dataTransferHasType(dt, mime) {
   const types = dt?.types;
   if (!types) return false;
@@ -1740,7 +1672,6 @@ function canIndentAsSubtask(tasks, idx) {
   if (mainTaskHasSubtasks(tasks, idx)) return false;
   // Don't pull a regular task into this week's main-thing block via indent.
   if (
-    typeof indexIsInMainThingSpan === "function" &&
     indexIsInMainThingSpan(tasks, idx - 1) &&
     !indexIsInMainThingSpan(tasks, idx)
   ) {
@@ -2839,10 +2770,6 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
     window.__dragTaskPayload = payload;
   }
 
-  function getGlobalDragPayload() {
-    return window.__dragTaskPayload || null;
-  }
-
   function clearGlobalDragPayload() {
     window.__dragTaskPayload = null;
   }
@@ -3096,22 +3023,6 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
     return true;
   }
 
-  /**
-   * Combine the authoritative server snapshot with anything the user changed
-   * locally that hasn't been persisted yet.
-   *
-   * Server rows arrive ordered by the `position` column. We only preserve
-   * client-side order while something is still `_dirty` or a draft without a
-   * dbId — otherwise the server order wins (multi-device reorder).
-   *
-   * Algorithm when local order must be preserved:
-   *   1. Walk `localBefore` in its existing order.
-   *   2. Append any unused server rows at the end.
-   */
-  function mergeLocalEditsIntoServerSnapshotForGeneral(serverTasks, localBefore) {
-    return mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
-  }
-
   async function loadTasksForUser() {
     if (!supabase) {
       console.error("Supabase client is not initialized.");
@@ -3137,23 +3048,10 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
     // show another week's tasks while the network request is in flight.
     const hadCache = applyCachedGeneralTasks(requestedWeekIso);
     if (!hadCache) state.tasks = [];
+    // The list now belongs to this workspace: let render() keep the cache in
+    // sync even if the server never answers (offline edits survive reload).
+    tasksWorkspaceId = workspaceId;
     render();
-
-    const migrateKey = `oneweek-general-date-migrated-${authUserId}`;
-    if (!localStorage.getItem(migrateKey)) {
-      const anchorIso = getCalendarWeekMondayIso();
-      const { error: migErr } = await supabase
-        .from("tasks")
-        .update({ date: anchorIso })
-        .eq("user_id", authUserId)
-        .eq("type", "general")
-        .is("date", null);
-      if (!migErr) localStorage.setItem(migrateKey, "1");
-    }
-
-    if (getVisibleWeekMondayIso() !== requestedWeekIso) return;
-    if (loadGen !== generalLoadGen) return;
-    if (getActiveWorkspaceId() !== workspaceId) return;
 
     const { data, error } = await supabase
       .from("tasks")
@@ -3189,7 +3087,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
       isMain: !!row.is_main,
       _dirty: false,
     }));
-    state.tasks = mergeLocalEditsIntoServerSnapshotForGeneral(serverTasks, localBefore);
+    state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, localBefore);
     const fixed = normalizeSubtaskFlags(state.tasks);
     persistSubtaskNormalizationFixes(fixed, { markTaskDirty, persistTask });
     normalizeMainThingFlags(state.tasks);
@@ -3239,23 +3137,9 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
   }
 
   function initAuth() {
-    if (window.oneweekAuth?.subscribe) {
-      window.oneweekAuth.subscribe((session) => {
-        void handleSession(session);
-      });
-      return;
-    }
-    if (!supabase) {
-      console.error("Supabase client is not initialized.");
-      return;
-    }
-    void (async () => {
-      const { data } = await supabase.auth.getSession();
-      await handleSession(data?.session);
-      supabase.auth.onAuthStateChange((_event, session) => {
-        void handleSession(session);
-      });
-    })();
+    window.oneweekAuth.subscribe((session) => {
+      void handleSession(session);
+    });
   }
 
   function removeTaskRow(taskId) {
@@ -3287,7 +3171,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
   }
 
   oneweekRegisterUndoHandler(GENERAL_BLOCK_ID, async (entry) => {
-    if (entry.type !== "delete" && entry.type !== "delete-subtree") return false;
+    if (entry.type !== "delete-subtree") return false;
     // Only restore if the user is still signed in as the same user and looking
     // at the same week/workspace where the delete happened. Otherwise leave
     // the entry alone (the loop will try the next one or no-op).
@@ -3296,12 +3180,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
     if ((entry.workspaceId || null) !== (getActiveWorkspaceId() || null)) {
       return false;
     }
-    const snapshots =
-      entry.type === "delete-subtree" && Array.isArray(entry.snapshots)
-        ? entry.snapshots
-        : entry.snapshot
-          ? [entry.snapshot]
-          : [];
+    const snapshots = Array.isArray(entry.snapshots) ? entry.snapshots : [];
     if (snapshots.length === 0) return false;
     await awaitPendingTaskDeletes();
     const at = Math.max(
@@ -4092,6 +3971,11 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
     const row = active.closest(".task-row");
     const id = row?.dataset.id;
     if (!id) return;
+    // A never-saved empty draft has nothing to persist. Syncing it would drop
+    // it from state while its row stays focused (e.g. on app switch), so text
+    // typed after returning would be silently lost.
+    const task = state.tasks[getTaskIndex(id)];
+    if (task && !task.dbId && isTaskEmptyText(active.value)) return;
     await syncTaskFromInput(id);
   }
 
@@ -4353,7 +4237,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
         const list = overMain
           ? mainThingRoot?.querySelector(".tasks-list")
           : tasksFieldRoot.querySelector(".tasks-list");
-        const moved = reorderTaskFromSameListDrop(
+        const moved = reorderSubtreeFromSameListDrop(
           state.tasks,
           fromId,
           e,
@@ -4822,10 +4706,6 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
       window.__dragTaskPayload = payload;
     }
 
-    function getGlobalDragPayload() {
-      return window.__dragTaskPayload || null;
-    }
-
     function clearGlobalDragPayload() {
       window.__dragTaskPayload = null;
     }
@@ -5006,6 +4886,8 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
       // this day, clear the list so we never show stale data from another day.
       const hadCache = applyCachedDayTasks();
       if (!hadCache) state.tasks = [];
+      // See loadTasksForUser: cache writes must work before the server answers.
+      tasksWorkspaceId = cachedWorkspaceId;
       render();
 
       const { data, error } = await supabase
@@ -5111,7 +4993,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
     }
 
     oneweekRegisterUndoHandler(blockId, async (entry) => {
-      if (entry.type !== "delete" && entry.type !== "delete-subtree") return false;
+      if (entry.type !== "delete-subtree") return false;
       if (!currentUserId || entry.userId !== currentUserId) return false;
       if (entry.dayName !== dayMeta.dayName || entry.date !== dayMeta.date) {
         return false;
@@ -5119,12 +5001,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
       if ((entry.workspaceId || null) !== (getActiveWorkspaceId() || null)) {
         return false;
       }
-      const snapshots =
-        entry.type === "delete-subtree" && Array.isArray(entry.snapshots)
-          ? entry.snapshots
-          : entry.snapshot
-            ? [entry.snapshot]
-            : [];
+      const snapshots = Array.isArray(entry.snapshots) ? entry.snapshots : [];
       if (snapshots.length === 0) return false;
       await awaitPendingTaskDeletes();
       const at = Math.max(
@@ -5786,6 +5663,9 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
       const row = active.closest(".task-row");
       const id = row?.dataset.id;
       if (!id) return;
+      // See flushFocusedGeneralInput: keep the focused empty draft in state.
+      const task = state.tasks[getTaskIndex(id)];
+      if (task && !task.dbId && isTaskEmptyText(active.value)) return;
       await syncTaskFromInput(id);
     }
 
@@ -5994,7 +5874,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
           state.isDragging = false;
           if (!fromId) return;
           const list = tasksEl.querySelector(".tasks-list");
-          const moved = reorderTaskFromSameListDrop(
+          const moved = reorderSubtreeFromSameListDrop(
             state.tasks,
             fromId,
             e,
@@ -6108,23 +5988,9 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
   }
 
   function initDailyAuth() {
-    if (window.oneweekAuth?.subscribe) {
-      window.oneweekAuth.subscribe((session) => {
-        void applyAuthSession(session);
-      });
-      return;
-    }
-    if (!supabase) {
-      console.error("Supabase client is not initialized for daily tasks.");
-      return;
-    }
-    void (async () => {
-      const { data } = await supabase.auth.getSession();
-      await applyAuthSession(data?.session);
-      supabase.auth.onAuthStateChange((_event, session) => {
-        void applyAuthSession(session);
-      });
-    })();
+    window.oneweekAuth.subscribe((session) => {
+      void applyAuthSession(session);
+    });
   }
 
   initDailyAuth();
@@ -6207,9 +6073,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
 
   function shiftWeek(delta) {
     void (async () => {
-      if (typeof window.__flushAllTaskSaves === "function") {
-        await window.__flushAllTaskSaves();
-      }
+      await flushAllTaskSaves();
       window.__weekOffset = Number(window.__weekOffset || 0) + delta;
       syncWeekAwayClass();
       updateDayOfMonthLabels();
@@ -6222,9 +6086,7 @@ function toggleAndRepositionTask(tasks, idx, partitionFn = partitionUncheckedBef
 
   function setWeekOffset(offset) {
     void (async () => {
-      if (typeof window.__flushAllTaskSaves === "function") {
-        await window.__flushAllTaskSaves();
-      }
+      await flushAllTaskSaves();
       const previous = Number(window.__weekOffset || 0);
       window.__weekOffset = offset;
       syncWeekAwayClass();
@@ -6349,9 +6211,7 @@ async function logout() {
 
   // Persist anything that's still in-flight before the session goes away.
   try {
-    if (typeof window.__flushAllTaskSaves === "function") {
-      await window.__flushAllTaskSaves();
-    }
+    await flushAllTaskSaves();
   } catch (err) {
     console.error("Pre-logout flush failed:", err);
   }
@@ -6367,7 +6227,7 @@ async function logout() {
 
 window.addEventListener("load", () => {
   const overlay = document.getElementById("auth-overlay");
-  const authTriggers = document.querySelectorAll("#auth-trigger, #auth-trigger-mobile");
+  const authTriggers = document.querySelectorAll("#auth-trigger-mobile");
   const closeBtn = document.getElementById("auth-close");
   const openSignInBtn = document.getElementById("auth-open-signin");
   const logoutBtn = document.getElementById("logout-button");
@@ -6429,16 +6289,9 @@ window.addEventListener("load", () => {
     }
   }
 
-  if (window.oneweekAuth?.subscribe) {
-    window.oneweekAuth.subscribe(() => {
-      void refreshAuthStatus();
-    });
-  } else if (window.supabaseClient) {
-    window.supabaseClient.auth.onAuthStateChange(() => {
-      void refreshAuthStatus();
-    });
+  window.oneweekAuth.subscribe(() => {
     void refreshAuthStatus();
-  }
+  });
 
   const themeInputText = document.getElementById("theme-color-text");
   const themeInputBg = document.getElementById("theme-color-background");
@@ -6450,6 +6303,7 @@ window.addEventListener("load", () => {
   const themeCustomName = document.getElementById("theme-custom-name");
 
   let editingCustomThemeId = null;
+  const DEFAULT_THEME_KEY = window.oneweekTheme?.DEFAULT_THEME_KEY || "auto";
 
   function getThemePresets() {
     return themeApi()?.PRESETS || {};
@@ -6460,23 +6314,11 @@ window.addEventListener("load", () => {
   }
 
   function getSelectedThemeKey() {
-    const tw = themeApi();
-    const storageKey = tw?.THEME_SELECTED_KEY || "oneweek-theme-selected";
-    try {
-      const raw = localStorage.getItem(storageKey) || "white";
-      const tw = themeApi();
-      return tw?.migrateThemeKey?.(raw) ?? raw;
-    } catch (_) {
-      return "white";
-    }
+    return themeApi()?.getSelectedThemeKey() ?? DEFAULT_THEME_KEY;
   }
 
   function setSelectedThemeKey(key) {
-    const tw = themeApi();
-    const storageKey = tw?.THEME_SELECTED_KEY || "oneweek-theme-selected";
-    try {
-      localStorage.setItem(storageKey, key);
-    } catch (_) {}
+    themeApi()?.setSelectedThemeKey(key);
   }
 
   function customThemeLabel(theme) {
@@ -6499,6 +6341,10 @@ window.addEventListener("load", () => {
     if (!themeSelect) return;
     const tw = themeApi();
     themeSelect.innerHTML = "";
+    const autoOpt = document.createElement("option");
+    autoOpt.value = tw?.AUTO_THEME_KEY || "auto";
+    autoOpt.textContent = "Match device";
+    themeSelect.appendChild(autoOpt);
     for (const [key, preset] of Object.entries(getThemePresets())) {
       const opt = document.createElement("option");
       opt.value = key;
@@ -6536,19 +6382,7 @@ window.addEventListener("load", () => {
   function applyThemeByKey(key) {
     const tw = themeApi();
     if (!tw) return;
-    if (tw.isCustomThemeKey(key)) {
-      const theme = tw.findCustomTheme(tw.customThemeIdFromKey(key));
-      if (theme) {
-        tw.persistTheme(theme.text, theme.bg);
-        tw.applyThemeToDocument(theme.text, theme.bg, theme.fontId || "");
-      }
-    } else {
-      const p = getThemePresets()[key];
-      if (p) {
-        tw.persistTheme(p.text, p.bg);
-        tw.applyThemeToDocument(p.text, p.bg, "");
-      }
-    }
+    tw.applyThemeKey(key);
     setSelectedThemeKey(key);
   }
 
@@ -6565,16 +6399,8 @@ window.addEventListener("load", () => {
   function fillThemeFormForOwnMode(previousKey) {
     const tw = themeApi();
     if (!tw) return;
-    let resolvedKey = previousKey;
-    if (resolvedKey === "custom") {
-      const themes = tw.getCustomThemes();
-      if (themes.length > 0) {
-        const pick = themes.find((t) => t.id === "migrated") || themes[0];
-        resolvedKey = tw.customThemeSelectKey(pick.id);
-      }
-    }
-    if (tw.isCustomThemeKey(resolvedKey)) {
-      const id = tw.customThemeIdFromKey(resolvedKey);
+    if (tw.isCustomThemeKey(previousKey)) {
+      const id = tw.customThemeIdFromKey(previousKey);
       const theme = tw.findCustomTheme(id);
       if (theme) {
         editingCustomThemeId = id;
@@ -6606,22 +6432,7 @@ window.addEventListener("load", () => {
   }
 
   function resolveThemeKey(key) {
-    const tw = themeApi();
-    key = tw?.migrateThemeKey?.(key) ?? key;
-    if (key === "own") return "own";
-    if (getThemePresets()[key]) return key;
-    if (tw && key === "custom") {
-      const themes = tw.getCustomThemes();
-      if (themes.length > 0) {
-        const pick = themes.find((t) => t.id === "migrated") || themes[0];
-        return tw.customThemeSelectKey(pick.id);
-      }
-    }
-    if (tw && tw.isCustomThemeKey(key)) {
-      const theme = tw.findCustomTheme(tw.customThemeIdFromKey(key));
-      if (theme) return key;
-    }
-    return "white";
+    return themeApi()?.isKnownThemeKey(key) ? key : DEFAULT_THEME_KEY;
   }
 
   function syncThemeSelect() {
@@ -6635,7 +6446,7 @@ window.addEventListener("load", () => {
     buildThemeOptions();
     themeSelect.value = key;
     if (!themeSelect.value) {
-      key = "white";
+      key = DEFAULT_THEME_KEY;
       themeSelect.value = key;
       setSelectedThemeKey(key);
     }
@@ -6695,8 +6506,6 @@ window.addEventListener("load", () => {
       closeBtn && focusables.includes(closeBtn) ? closeBtn : focusables[0];
     if (toFocus) toFocus.focus();
   }
-
-  window.oneweekOpenAuth = openAuthPopup;
 
   function closeAuthPopup() {
     if (!overlay || !sidebar) return;
@@ -7089,8 +6898,7 @@ window.addEventListener("load", () => {
         .concat(saved);
       tw.saveCustomThemes(themes);
       const selectKey = tw.customThemeSelectKey(id);
-      tw.persistTheme(nt, nb);
-      tw.applyThemeToDocument(nt, nb, fontId);
+      tw.applyThemeKey(selectKey);
       try {
         localStorage.setItem(tw.THEME_CUSTOM_FONT_KEY, fontId);
       } catch (_) {}
@@ -7116,7 +6924,7 @@ window.addEventListener("load", () => {
       const id = tw.customThemeIdFromKey(key);
       tw.saveCustomThemes(tw.getCustomThemes().filter((t) => t.id !== id));
       editingCustomThemeId = null;
-      applyThemeByKey("white");
+      applyThemeByKey(DEFAULT_THEME_KEY);
       syncThemeSelect();
       setAuthMessage("Custom theme deleted.", false);
     });
@@ -7124,6 +6932,17 @@ window.addEventListener("load", () => {
 
   buildThemeFontOptions();
   syncThemeSelect();
+
+  // Theme settings synced from another device: refresh the picker unless the
+  // user is mid-edit in "Own..." (theme-init leaves that draft untouched).
+  window.addEventListener(themeApi()?.THEME_REMOTE_CHANGE || "oneweek-theme-remote-change", () => {
+    if (getSelectedThemeKey() === "own") {
+      buildThemeOptions();
+      themeSelect.value = "own";
+      return;
+    }
+    syncThemeSelect();
+  });
 });
 
 /**
@@ -7489,22 +7308,7 @@ window.addEventListener("load", () => {
     }
   }
 
-  if (window.oneweekAuth?.subscribe) {
-    window.oneweekAuth.subscribe((session) => {
-      void applySession(session);
-    });
-  } else {
-    (async () => {
-      try {
-        const { data } = await supabase.auth.getSession();
-        await applySession(data?.session ?? null);
-      } catch (err) {
-        console.error("Guest auth init failed:", err);
-        show();
-      }
-    })();
-    supabase.auth.onAuthStateChange((_event, session) => {
-      void applySession(session);
-    });
-  }
+  window.oneweekAuth.subscribe((session) => {
+    void applySession(session);
+  });
 })();

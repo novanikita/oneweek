@@ -8,8 +8,6 @@
  */
 (() => {
   const ACTIVE_KEY_PREFIX = "oneweek-active-workspace-";
-  const DEFAULT_WS_KEY_PREFIX = "oneweek-default-workspace-";
-  const MIGRATED_KEY_PREFIX = "oneweek-workspaces-migrated-";
   const DEFAULT_NAME = "main";
 
   const WORKSPACE_CHANGE = "workspace-change";
@@ -28,55 +26,13 @@
     return `${ACTIVE_KEY_PREFIX}${userId}`;
   }
 
-  function migratedKey(userId) {
-    return `${MIGRATED_KEY_PREFIX}${userId}`;
-  }
-
-  function defaultWorkspaceKey(userId) {
-    return `${DEFAULT_WS_KEY_PREFIX}${userId}`;
-  }
-
-  function readDefaultWorkspaceId(userId) {
-    try {
-      return localStorage.getItem(defaultWorkspaceKey(userId));
-    } catch {
-      return null;
-    }
-  }
-
-  function writeDefaultWorkspaceId(userId, id) {
-    try {
-      if (userId && id) localStorage.setItem(defaultWorkspaceKey(userId), id);
-    } catch {
-      /* storage blocked */
-    }
-  }
-
-  /** Protected default workspace id — stable even if the user renames it. */
-  function resolveDefaultWorkspaceId() {
-    if (!state.userId || state.list.length === 0) return null;
-    const stored = readDefaultWorkspaceId(state.userId);
-    if (stored && state.list.some((w) => w.id === stored)) return stored;
-    const flagged = state.list.find((w) => w.is_default);
-    if (flagged?.id) {
-      writeDefaultWorkspaceId(state.userId, flagged.id);
-      return flagged.id;
-    }
-    const first = sortList(state.list)[0];
-    if (first?.id) {
-      writeDefaultWorkspaceId(state.userId, first.id);
-      return first.id;
-    }
-    return null;
+  /** Protected default workspace (server `is_default`, one per user). */
+  function getDefaultWorkspaceId() {
+    return state.list.find((w) => w.is_default)?.id ?? null;
   }
 
   function isDefaultWorkspace(id) {
-    if (!id) return false;
-    return id === resolveDefaultWorkspaceId();
-  }
-
-  function getDefaultWorkspaceId() {
-    return resolveDefaultWorkspaceId();
+    return !!id && id === getDefaultWorkspaceId();
   }
 
   function readActiveFromStorage(userId) {
@@ -129,18 +85,21 @@
     return code === "23505" || msg.includes("duplicate") || msg.includes("unique");
   }
 
-  /** Idempotent default workspace — safe when two tabs race on first login. */
+  /** Idempotent default workspace — safe when two tabs race on first login
+   *  (the unique `is_default` index rejects the second insert). */
   async function ensureDefaultWorkspaceExists() {
-    let list = sortList(await fetchWorkspaces());
+    let list = await fetchWorkspaces();
     if (list.length > 0) return list;
 
-    try {
-      await createDefaultWorkspace();
-    } catch (err) {
-      if (!isWorkspaceConflictError(err)) throw err;
-    }
+    const { error } = await state.supabase.from("workspaces").insert({
+      user_id: state.userId,
+      name: DEFAULT_NAME,
+      position: 0,
+      is_default: true,
+    });
+    if (error && !isWorkspaceConflictError(error)) throw error;
 
-    list = sortList(await fetchWorkspaces());
+    list = await fetchWorkspaces();
     if (list.length === 0) {
       throw new Error("Default workspace missing after concurrent create");
     }
@@ -148,185 +107,30 @@
   }
 
   async function fetchWorkspaces() {
-    let { data, error } = await state.supabase
+    const { data, error } = await state.supabase
       .from("workspaces")
       .select("id, name, position, created_at, is_default")
       .eq("user_id", state.userId)
       .order("position", { ascending: true })
       .order("created_at", { ascending: true });
-    if (error) {
-      const msg = String(error.message || "").toLowerCase();
-      if (msg.includes("is_default")) {
-        ({ data, error } = await state.supabase
-          .from("workspaces")
-          .select("id, name, position, created_at")
-          .eq("user_id", state.userId)
-          .order("position", { ascending: true })
-          .order("created_at", { ascending: true }));
-      }
-      if (error) throw error;
-    }
-    return data ?? [];
-  }
-
-  async function createDefaultWorkspace() {
-    const { data, error } = await state.supabase
-      .from("workspaces")
-      .insert({
-        user_id: state.userId,
-        name: DEFAULT_NAME,
-        position: 0,
-        is_default: true,
-      })
-      .select("id, name, position, created_at, is_default")
-      .single();
-    if (error) {
-      if (isWorkspaceConflictError(error)) {
-        const list = sortList(await fetchWorkspaces());
-        const existing = list.find((w) => w.is_default) || list[0];
-        if (existing) {
-          writeDefaultWorkspaceId(state.userId, existing.id);
-          return existing;
-        }
-      }
-      const msg = String(error.message || "").toLowerCase();
-      if (!msg.includes("is_default")) throw error;
-      const fallback = await state.supabase
-        .from("workspaces")
-        .insert({
-          user_id: state.userId,
-          name: DEFAULT_NAME,
-          position: 0,
-        })
-        .select("id, name, position, created_at")
-        .single();
-      if (fallback.error) throw fallback.error;
-      writeDefaultWorkspaceId(state.userId, fallback.data.id);
-      return fallback.data;
-    }
-    writeDefaultWorkspaceId(state.userId, data.id);
-    return data;
-  }
-
-  /** First-time setup: ensure the user has at least one workspace and that
-   *  every task they already own gets pinned to it. */
-  async function migrateIfNeeded() {
-    let key;
-    try {
-      key = migratedKey(state.userId);
-      if (localStorage.getItem(key) === "1") return;
-    } catch {
-      /* storage blocked — still safe to run, just may run again next reload */
-    }
-
-    if (state.list.length === 0) {
-      state.list = await ensureDefaultWorkspaceExists();
-    }
-
-    const target = state.list[0];
-
-    const { error } = await state.supabase
-      .from("tasks")
-      .update({ workspace_id: target.id })
-      .eq("user_id", state.userId)
-      .is("workspace_id", null);
-    if (error) {
-      console.error("Workspace backfill failed:", error);
-      return;
-    }
-    try {
-      localStorage.setItem(key, "1");
-    } catch {
-      /* ignore */
-    }
+    if (error) throw error;
+    return sortList(data ?? []);
   }
 
   function pickInitialActive() {
     const stored = readActiveFromStorage(state.userId);
     if (stored && state.list.some((w) => w.id === stored)) return stored;
-    return state.list[0]?.id ?? null;
-  }
-
-  function defaultReconciledKey(userId) {
-    return `oneweek-default-reconciled-${userId}`;
-  }
-
-  /** Once per user: prefer the legacy browser-stored default id over a fresh
-   *  position-based server default from the is_default migration. */
-  async function reconcileLegacyDefaultWorkspace() {
-    if (!ensureSupabase() || !state.userId || state.list.length === 0) return;
-
-    let reconcileKey;
-    try {
-      reconcileKey = defaultReconciledKey(state.userId);
-      if (localStorage.getItem(reconcileKey) === "1") return;
-    } catch {
-      /* storage blocked — still attempt reconcile */
-    }
-
-    const storedId = readDefaultWorkspaceId(state.userId);
-    const serverDefault = state.list.find((w) => w.is_default);
-    const hasIsDefaultColumn = state.list.some((w) => "is_default" in w);
-
-    let targetId = null;
-    if (storedId && state.list.some((w) => w.id === storedId)) {
-      targetId = storedId;
-    } else if (serverDefault?.id) {
-      targetId = serverDefault.id;
-    } else {
-      targetId = sortList(state.list)[0]?.id ?? null;
-    }
-    if (!targetId) return;
-
-    if (hasIsDefaultColumn && targetId !== serverDefault?.id) {
-      const { error: clearErr } = await state.supabase
-        .from("workspaces")
-        .update({ is_default: false })
-        .eq("user_id", state.userId);
-      if (clearErr) {
-        console.warn("Default workspace reconcile (clear) failed:", clearErr);
-      } else {
-        const { error: setErr } = await state.supabase
-          .from("workspaces")
-          .update({ is_default: true })
-          .eq("id", targetId)
-          .eq("user_id", state.userId);
-        if (setErr) {
-          console.warn("Default workspace reconcile (set) failed:", setErr);
-        } else {
-          state.list = sortList(await fetchWorkspaces());
-        }
-      }
-    }
-
-    writeDefaultWorkspaceId(state.userId, targetId);
-
-    try {
-      if (reconcileKey) localStorage.setItem(reconcileKey, "1");
-    } catch {
-      /* ignore */
-    }
+    return getDefaultWorkspaceId() ?? state.list[0]?.id ?? null;
   }
 
   async function loadForUser() {
     state.ready = false;
-    try {
-      state.list = sortList(await fetchWorkspaces());
-      await migrateIfNeeded();
-      await reconcileLegacyDefaultWorkspace();
-      if (state.list.length === 0) {
-        state.list = await ensureDefaultWorkspaceExists();
-      }
-      state.activeId = pickInitialActive();
-      writeActiveToStorage(state.userId, state.activeId);
-      resolveDefaultWorkspaceId();
-      state.ready = true;
-      dispatchList();
-      dispatchActive();
-    } catch (err) {
-      state.ready = false;
-      throw err;
-    }
+    state.list = await ensureDefaultWorkspaceExists();
+    state.activeId = pickInitialActive();
+    writeActiveToStorage(state.userId, state.activeId);
+    state.ready = true;
+    dispatchList();
+    dispatchActive();
   }
 
   function beginLoadForUser() {
@@ -394,24 +198,6 @@
     await beginLoadForUser();
   }
 
-  async function ensureReady() {
-    await ensureLoadedForCurrentUser();
-  }
-
-  /** Used by other modules (script.js panels) that resolve auth in parallel.
-   *  Kicks off the workspace load if it hasn't started yet for this user. */
-  async function ensureReadyFor(userId) {
-    if (!userId) return;
-    if (state.userId === userId && state.ready) return;
-    if (state.userId !== userId) {
-      state.userId = userId;
-      if (!ensureSupabase()) return;
-      await beginLoadForUser();
-      return;
-    }
-    await ensureLoadedForCurrentUser();
-  }
-
   function getActiveId() {
     return state.activeId;
   }
@@ -465,7 +251,7 @@
         name,
         position: nextPosition(),
       })
-      .select("id, name, position, created_at")
+      .select("id, name, position, created_at, is_default")
       .single();
     if (error) {
       console.error("Workspace create failed:", error);
@@ -636,7 +422,7 @@
         );
       }
       try {
-        state.list = sortList(await fetchWorkspaces());
+        state.list = await fetchWorkspaces();
         dispatchList();
       } catch (err) {
         console.error("Workspace reorder reconcile failed:", err);
@@ -651,8 +437,6 @@
   window.oneweekWorkspaces = {
     init,
     applyAuthSession,
-    ensureReady,
-    ensureReadyFor,
     getActiveId,
     getList,
     isReady,
