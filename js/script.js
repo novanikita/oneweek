@@ -592,8 +592,15 @@ const ONEWEEK_AUTH_CHANGE = "oneweek-auth-change";
   const listeners = new Set();
   let chain = Promise.resolve();
 
+  let lastUserId = null;
+
   async function publish(nextSession) {
     session = nextSession ?? null;
+    const userId = session?.user?.id ?? null;
+    // Session ended or switched user (expiry, logout in another tab): the
+    // previous user's plaintext task caches must not stay on the device.
+    if (lastUserId && lastUserId !== userId) clearAllTasksCaches();
+    lastUserId = userId;
     try {
       await window.oneweekWorkspaces.applyAuthSession(session);
     } catch (err) {
@@ -680,72 +687,31 @@ function readTasksCache(key) {
   }
 }
 
-/** Push 0..n-1 positions for persisted rows (after drag, toggle, paste, etc.). */
+/**
+ * Save the list order (positions 0..n-1 of saved rows) in one request via
+ * the `set_task_positions` DB function — atomic, so a failure leaves the old
+ * order intact and the rows stay marked for a retry.
+ */
 async function persistTaskPositions(supabase, userId, tasks) {
   if (!supabase || !userId || !tasks?.length) return;
-
-  const updates = [];
-  for (let i = 0; i < tasks.length; i++) {
-    const t = tasks[i];
-    if (t.dbId == null) continue;
-    updates.push({
-      dbId: t.dbId,
-      newPosition: i,
-      oldPosition: typeof t.position === "number" ? t.position : i,
-    });
-  }
-  if (updates.length === 0) return;
+  const ids = [];
+  const positions = [];
+  tasks.forEach((t, i) => {
+    if (t.dbId == null) return;
+    ids.push(t.dbId);
+    positions.push(i);
+  });
+  if (ids.length === 0) return;
 
   syncPositionsFromArray(tasks);
-
-  async function applyPositions(rows) {
-    const results = await Promise.all(
-      rows.map(({ dbId, newPosition }) =>
-        supabase
-          .from("tasks")
-          .update({ position: newPosition })
-          .eq("id", dbId)
-          .eq("user_id", userId)
-      )
-    );
-    const failed = [];
-    results.forEach((result, i) => {
-      if (result.error) failed.push({ ...rows[i], error: result.error });
-    });
-    return failed;
+  const { error } = await supabase.rpc("set_task_positions", { ids, positions });
+  const saved = tasks.filter((t) => t.dbId);
+  if (error) {
+    markNetworkFailure(error);
+    for (const t of saved) t._positionDirty = true;
+    throw error;
   }
-
-  let pending = updates.map(({ dbId, newPosition }) => ({ dbId, newPosition }));
-  let failed = await applyPositions(pending);
-  if (failed.length > 0) {
-    pending = failed.map(({ dbId, newPosition }) => ({ dbId, newPosition }));
-    failed = await applyPositions(pending);
-  }
-
-  if (failed.length > 0) {
-    markNetworkFailure(failed[0].error);
-    const failedIds = new Set(failed.map((f) => f.dbId));
-    const toRevert = updates.filter((u) => !failedIds.has(u.dbId));
-    if (toRevert.length > 0) {
-      await Promise.allSettled(
-        toRevert.map(({ dbId, oldPosition }) =>
-          supabase
-            .from("tasks")
-            .update({ position: oldPosition })
-            .eq("id", dbId)
-            .eq("user_id", userId)
-        )
-      );
-    }
-    for (const t of tasks) {
-      if (t.dbId) t._positionDirty = true;
-    }
-    throw failed[0].error;
-  }
-
-  for (const t of tasks) {
-    if (t.dbId) t._positionDirty = false;
-  }
+  for (const t of saved) t._positionDirty = false;
   markNetworkSuccess();
 }
 
@@ -804,6 +770,64 @@ function writeTasksCache(key, tasks) {
   } catch (_) {
     /* localStorage may be full or disabled — ignore. */
   }
+}
+
+/** Cached lists and marks for weeks older than this many weeks are dropped. */
+const LOCAL_DATA_KEEP_WEEKS = 8;
+
+/** Keys written by client-side migrations that no longer exist. */
+const OBSOLETE_LOCAL_KEY_PREFIXES = [
+  "oneweek-default-workspace-",
+  "oneweek-workspaces-migrated-",
+  "oneweek-default-reconciled-",
+  "oneweek-general-date-migrated-",
+];
+
+/**
+ * Keep localStorage bounded: drop cached lists and "move remaining" marks of
+ * weeks long past (never a list with unsynced edits) and obsolete keys.
+ */
+function pruneLocalData() {
+  try {
+    const cutoff = toIsoDateFromDate(getWeekMondayStart(new Date(), -LOCAL_DATA_KEEP_WEEKS));
+    const drop = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k?.startsWith("oneweek-")) continue;
+      if (OBSOLETE_LOCAL_KEY_PREFIXES.some((prefix) => k.startsWith(prefix))) {
+        drop.push(k);
+        continue;
+      }
+      const isCache = k.startsWith("oneweek-cache-");
+      if (!isCache && !k.startsWith("oneweek-move-remaining-done-")) continue;
+      // Ids are UUIDs (hex groups of 4+), so this only matches the date part.
+      const date = k.match(/\d{4}-\d{2}-\d{2}/)?.[0];
+      if (!date || date >= cutoff) continue;
+      if (isCache && (readTasksCache(k) ?? []).some((t) => t.dirty)) continue;
+      drop.push(k);
+    }
+    for (const k of drop) localStorage.removeItem(k);
+  } catch (_) {
+    /* storage blocked */
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("load", () => setTimeout(pruneLocalData, 3000));
+}
+
+/** True if any cached list still holds edits that never reached the server. */
+function hasUnsyncedTaskEdits() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith("oneweek-cache-")) continue;
+      if ((readTasksCache(k) ?? []).some((t) => t.dirty)) return true;
+    }
+  } catch (_) {
+    /* storage blocked */
+  }
+  return false;
 }
 
 /** Remove plaintext task caches (privacy: shared devices / after logout). */
@@ -2275,7 +2299,20 @@ async function logout() {
     console.error("Pre-logout flush failed:", err);
   }
 
-  const { error } = await supabase.auth.signOut();
+  // Edits that still could not reach the server live only in this device's
+  // cache, which logging out clears.
+  if (
+    hasUnsyncedTaskEdits() &&
+    !window.confirm("Some changes haven't synced yet and will be lost if you log out now. Log out anyway?")
+  ) {
+    return { ok: false, cancelled: true };
+  }
+
+  let { error } = await supabase.auth.signOut();
+  if (error && isLikelyNetworkError(error)) {
+    // Offline: the server can't end the session now; forget it on this device.
+    ({ error } = await supabase.auth.signOut({ scope: "local" }));
+  }
   if (error) {
     console.error("Sign out failed:", error);
     return { ok: false, error: "Logout failed." };
@@ -2310,6 +2347,10 @@ window.addEventListener("load", () => {
     setAuthMessage(pendingText);
     const res = await actionFn();
     setAuthPending(false);
+    if (res?.cancelled) {
+      setAuthMessage("");
+      return false;
+    }
     if (!res?.ok) {
       setAuthMessage(res?.error || "Operation failed.", true);
       return false;

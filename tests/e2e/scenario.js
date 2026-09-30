@@ -570,6 +570,63 @@
     checkpoints.final = { names: names(), db: window.__fakeDb.workspaces.map((w) => `${w.name}@${w.position}`), active: window.oneweekWorkspaces.getList().find((w) => w.id === window.oneweekWorkspaces.getActiveId())?.name };
   }
 
+  /** Local data pruning, main-thing rollback offline, offline logout. */
+  async function scenario8() {
+    for (let i = 0; i < 100 && !general().querySelector(".tasks-list"); i++) await sleep(50);
+    await sleep(300);
+
+    log("prune old local data");
+    const old = (name, dirty) =>
+      localStorage.setItem(name, JSON.stringify({ tasks: [{ text: "x", dirty }], savedAt: 0 }));
+    old("oneweek-cache-general-u1-2025-01-06-wsX", false);
+    old("oneweek-cache-daily-u1-Monday-2025-01-06-wsX", true);
+    localStorage.setItem("oneweek-move-remaining-done-u1-2025-01-06-wsX", "1");
+    localStorage.setItem("oneweek-default-workspace-u1", "x");
+    old(`oneweek-cache-general-u1-${new Date().toISOString().slice(0, 10)}-wsX`, false);
+    pruneLocalData();
+    checkpoints.pruned = Object.keys(localStorage).filter((k) => k.includes("u1-") || k.includes("-u1")).sort();
+
+    log("main thing A; star a Monday task offline -> rollback keeps A");
+    await clickEmpty(general());
+    await type("A");
+    await blur();
+    await click(row(general(), "A").querySelector(".task-star"));
+    await clickEmpty(day("Monday"));
+    await type("D");
+    await blur();
+    await sleep(300);
+    window.__fakeOffline = true;
+    await click(row(day("Monday"), "D").querySelector(".task-star"));
+    await sleep(800);
+    checkpoints.rolledBack = snapshot();
+    window.__fakeOffline = false;
+    window.dispatchEvent(new Event("online"));
+    await sleep(1200);
+    checkpoints.reconnected = snapshot();
+
+    log("offline logout with an unsynced edit: cancel, then confirm");
+    window.__fakeOffline = true;
+    await focus(row(mainThing(), "A"));
+    await type("A edited offline");
+    await blur();
+    await sleep(300);
+    let asked = 0;
+    window.confirm = () => (++asked, false);
+    await click($("#auth-trigger-mobile"));
+    await click($("#logout-button"));
+    await sleep(500);
+    checkpoints.cancelled = { asked, stillIn: !!window.oneweekAuth.getSession(), message: $("#auth-message").textContent };
+    window.confirm = () => (++asked, true);
+    await click($("#logout-button"));
+    await sleep(800);
+    checkpoints.loggedOut = {
+      asked,
+      session: !!window.oneweekAuth.getSession(),
+      caches: Object.keys(localStorage).filter((k) => k.startsWith("oneweek-cache-")).length,
+      guestModal: !$("#guest-auth-backdrop").hidden,
+    };
+  }
+
   function finish(error) {
     const pre = document.createElement("pre");
     pre.id = "out";
@@ -585,7 +642,7 @@
   }
 
   window.addEventListener("load", () => {
-    const which = { 2: scenario2, 3: scenario3, 4: scenario4, 5: scenario5, 6: scenario6, 7: scenario7 }[new URLSearchParams(location.search).get("s")] || scenario;
+    const which = { 2: scenario2, 3: scenario3, 4: scenario4, 5: scenario5, 6: scenario6, 7: scenario7, 8: scenario8 }[new URLSearchParams(location.search).get("s")] || scenario;
     which().then(() => finish(null), (err) => finish(err));
   });
 })();

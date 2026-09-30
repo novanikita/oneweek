@@ -120,3 +120,20 @@ create policy "user_settings_insert_own" on public.user_settings
   for insert with check (auth.uid() = user_id);
 create policy "user_settings_update_own" on public.user_settings
   for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- Save a list's order in one request (see db/2026-09-30-task-positions-rpc.sql).
+create or replace function public.set_task_positions(ids uuid[], positions int[])
+returns void
+language sql
+security invoker
+set search_path = ''
+as $$
+  update public.tasks t
+  set position = o.pos
+  from unnest(ids, positions) as o(id, pos)
+  where t.id = o.id
+    and t.user_id = auth.uid();
+$$;
+
+revoke all on function public.set_task_positions(uuid[], int[]) from public, anon;
+grant execute on function public.set_task_positions(uuid[], int[]) to authenticated;

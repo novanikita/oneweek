@@ -183,19 +183,38 @@
   }
 
   const authListeners = [];
+  let signedIn = true;
   window.supabaseClient = {
+    rpc: async (name, args) => {
+      await new Promise((r) => setTimeout(r, 3));
+      if (window.__fakeOffline) return { data: null, error: { message: "TypeError: Failed to fetch" } };
+      window.__fakeLog.push(`rpc ${name}`);
+      if (name !== "set_task_positions") return { data: null, error: { message: `unknown rpc ${name}` } };
+      args.ids.forEach((id, i) => {
+        const row = db.tasks.find((t) => t.id === id && t.user_id === USER.id);
+        if (row) row.position = args.positions[i];
+      });
+      return { data: null, error: null };
+    },
     from: (table) => {
       if (!db[table]) throw new Error(`unknown table ${table}`);
       return new Query(table);
     },
     auth: {
-      getSession: async () => ({ data: { session: SESSION }, error: null }),
+      getSession: async () => ({ data: { session: signedIn ? SESSION : null }, error: null }),
       onAuthStateChange(cb) {
         authListeners.push(cb);
         setTimeout(() => cb("INITIAL_SESSION", SESSION), 5);
         return { data: { subscription: { unsubscribe() {} } } };
       },
-      signOut: async () => ({ error: null }),
+      signOut: async (opts) => {
+        if (window.__fakeOffline && opts?.scope !== "local") {
+          return { error: { message: "TypeError: Failed to fetch" } };
+        }
+        signedIn = false;
+        setTimeout(() => authListeners.forEach((cb) => cb("SIGNED_OUT", null)), 5);
+        return { error: null };
+      },
       verifyOtp: async () => ({ error: null }),
       signInWithPassword: async () => ({ error: null }),
       signUp: async () => ({ data: { session: SESSION }, error: null }),

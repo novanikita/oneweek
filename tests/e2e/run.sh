@@ -1,7 +1,7 @@
 #!/bin/bash
 # UI regression run against an in-memory fake Supabase (no network, no account).
 #
-# Usage: tests/e2e/run.sh <source-dir> <label> [port] [scenario 1-7]
+# Usage: tests/e2e/run.sh <source-dir> <label> [port] [scenario 1-8]
 #   Copies <source-dir> (e.g. the repo, or `git archive <rev>` output), swaps
 #   the Supabase client for tests/e2e/fake-supabase.js, drives the UI with
 #   tests/e2e/scenario.js in headless Chromium, and writes

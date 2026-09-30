@@ -812,8 +812,13 @@ function createTaskPanel(cfg) {
     render();
   }
 
-  function rollbackIncomingMove(payload, insertedLocalIds) {
+  /** Undo a failed incoming move; `displaced` gets its main-thing star back. */
+  function rollbackIncomingMove(payload, insertedLocalIds, displaced) {
     rollbackCrossMoveOnTarget(state, insertedLocalIds);
+    if (displaced && getTaskIndex(displaced.id) !== -1) {
+      displaced.isMain = true;
+      void persistMainThingFlag(displaced);
+    }
     const backup = takeCrossMoveSourceBackup(payload.localId);
     if (backup) {
       window.dispatchEvent(
@@ -888,7 +893,7 @@ function createTaskPanel(cfg) {
     await flushAllTaskSaves();
 
     if (!sameListAddress(address, getAddress()) || workspaceId !== getActiveWorkspaceId()) {
-      rollbackIncomingMove(payload, insertedLocalIds);
+      rollbackIncomingMove(payload, insertedLocalIds, displaced);
       return;
     }
 
@@ -903,7 +908,7 @@ function createTaskPanel(cfg) {
     if (!ok) {
       markNetworkFailure(error);
       console.error(`Supabase move to ${blockId} failed:`, error);
-      rollbackIncomingMove(payload, insertedLocalIds);
+      rollbackIncomingMove(payload, insertedLocalIds, displaced);
       return;
     }
 
