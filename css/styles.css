@@ -1013,9 +1013,100 @@ h1 {
   margin-top: 0.2em;
 }
 
-#theme-delete-actions[hidden],
-#sidebar-workspace-delete-actions[hidden] {
+#theme-delete-actions[hidden] {
   display: none !important;
+}
+
+/* Sidebar workspace list (mobile; desktop uses the header tabs). */
+.workspace-list {
+  list-style: none;
+  margin-block: 0 0.6em;
+  margin-inline: -0.5em;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.workspace-list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+}
+
+.workspace-list-name,
+.workspace-list-more,
+.workspace-list-add {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0.35em;
+  cursor: pointer;
+}
+
+.workspace-list-name,
+.workspace-list-add {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.45em 0.5em;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-list-add {
+  width: 100%;
+  opacity: 0.6;
+}
+
+.workspace-list-more {
+  flex: 0 0 auto;
+  width: 2.2em;
+  height: 2.2em;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.55;
+}
+
+.workspace-list-name:hover,
+.workspace-list-more:hover,
+.workspace-list-add:hover,
+.workspace-list-item.is-open .workspace-list-more {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  opacity: 1;
+}
+
+.workspace-list-item.is-active .workspace-list-name {
+  font-weight: 600;
+}
+
+.workspace-list-name:focus-visible,
+.workspace-list-more:focus-visible,
+.workspace-list-add:focus-visible {
+  outline: 0.12em solid var(--color-text);
+  outline-offset: 0.08em;
+}
+
+.workspace-list-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0.1em 0;
+}
+
+.workspace-list-actions {
+  margin: 0;
+  padding: 0.2em 0.5em 0.5em;
+}
+
+.workspace-list-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.workspace-list-actions .is-danger:not(:disabled) {
+  color: #c62828;
 }
 
 .sidebar-actions button {

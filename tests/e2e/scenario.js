@@ -514,6 +514,57 @@
     await sleep(300);
   }
 
+  /** Sidebar workspace list: add + rename, reorder, protected default, delete. */
+  async function scenario7() {
+    for (let i = 0; i < 100 && !general().querySelector(".tasks-list"); i++) await sleep(50);
+    await sleep(300);
+    window.confirm = () => true;
+    const list = () => $("#sidebar-workspace-list");
+    const names = () => [...list().querySelectorAll(".workspace-list-item")].map(
+      (li) => (li.querySelector(".workspace-list-name")?.textContent ?? "") + (li.classList.contains("is-active") ? " (active)" : "")
+    );
+    const item = (name) =>
+      [...list().querySelectorAll(".workspace-list-item")].find((li) => li.querySelector(".workspace-list-name")?.textContent === name);
+    const openActions = async (name) => { await click(item(name).querySelector(".workspace-list-more")); };
+    const action = (name, label) =>
+      [...item(name).querySelectorAll(".workspace-list-actions button")].find((b) => b.textContent === label);
+    const addNamed = async (name) => {
+      await click(list().querySelector(".workspace-list-add"));
+      await sleep(300);
+      const input = list().querySelector(".workspace-list-edit");
+      input.value = name;
+      input.blur();
+      await sleep(400);
+    };
+
+    await click($("#auth-trigger-mobile"));
+    await addNamed("work");
+    await addNamed("home");
+    checkpoints.added = { names: names(), db: window.__fakeDb.workspaces.map((w) => `${w.name}@${w.position}`) };
+
+    await openActions("home");
+    await click(action("home", "Move down"));
+    await sleep(400);
+    checkpoints.moved = { names: names(), db: window.__fakeDb.workspaces.map((w) => `${w.name}@${w.position}`) };
+
+    await openActions("main");
+    checkpoints.mainDeleteDisabled = action("main", "Delete").disabled;
+    await openActions("main");
+
+    if (new URLSearchParams(location.search).get("shot")) {
+      await openActions("home");
+      await sleep(300);
+      return;
+    }
+
+    await openActions("home");
+    await click(action("home", "Delete"));
+    await sleep(500);
+    await click(item("work").querySelector(".workspace-list-name"));
+    await sleep(500);
+    checkpoints.final = { names: names(), db: window.__fakeDb.workspaces.map((w) => `${w.name}@${w.position}`), active: window.oneweekWorkspaces.getList().find((w) => w.id === window.oneweekWorkspaces.getActiveId())?.name };
+  }
+
   function finish(error) {
     const pre = document.createElement("pre");
     pre.id = "out";
@@ -529,7 +580,7 @@
   }
 
   window.addEventListener("load", () => {
-    const which = { 2: scenario2, 3: scenario3, 4: scenario4, 5: scenario5, 6: scenario6 }[new URLSearchParams(location.search).get("s")] || scenario;
+    const which = { 2: scenario2, 3: scenario3, 4: scenario4, 5: scenario5, 6: scenario6, 7: scenario7 }[new URLSearchParams(location.search).get("s")] || scenario;
     which().then(() => finish(null), (err) => finish(err));
   });
 })();

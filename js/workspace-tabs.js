@@ -3,6 +3,26 @@
  * Reads/writes state via `window.oneweekWorkspaces`. Listens to the module's
  * events to re-render. Self-contained DOM logic (drag-reorder, rename, delete).
  */
+/**
+ * Opt a workspace-name field out of password-manager autofill. Heuristics
+ * latch onto any text field in a document that also has the sign-in
+ * `<input type="password">`: Chromium/WebKit (`autocomplete`, `name`,
+ * `data-form-type`), 1Password, LastPass, Bitwarden.
+ */
+function configureWorkspaceNameInput(input) {
+  input.type = "text";
+  input.maxLength = 40;
+  input.name = "oneweek-workspace-name";
+  input.autocomplete = "off";
+  input.autocapitalize = "off";
+  input.spellcheck = false;
+  input.setAttribute("autocorrect", "off");
+  input.setAttribute("data-form-type", "other");
+  input.setAttribute("data-1p-ignore", "true");
+  input.setAttribute("data-lpignore", "true");
+  input.setAttribute("data-bwignore", "true");
+}
+
 (() => {
   const container = document.getElementById("workspace-tabs");
   const list = document.getElementById("workspace-tabs-list");
@@ -165,27 +185,9 @@
 
     if (renamingId === item.id) {
       const input = document.createElement("input");
-      input.type = "text";
+      configureWorkspaceNameInput(input);
       input.className = "workspace-tab-edit";
       input.value = item.name;
-      input.maxLength = 40;
-      // Browser password/credentials autofill heuristics latch onto any text
-      // field that sits in a document that also has `<input type="password">`
-      // (the auth panel in the sidebar). These attributes opt out of:
-      //   - Chromium/WebKit credential heuristics (`autocomplete="off"`,
-      //     `name`, `data-form-type="other"`)
-      //   - 1Password (`data-1p-ignore`)
-      //   - LastPass (`data-lpignore`)
-      //   - Bitwarden (`data-bwignore`)
-      input.name = "oneweek-workspace-name";
-      input.autocomplete = "off";
-      input.autocapitalize = "off";
-      input.spellcheck = false;
-      input.setAttribute("autocorrect", "off");
-      input.setAttribute("data-form-type", "other");
-      input.setAttribute("data-1p-ignore", "true");
-      input.setAttribute("data-lpignore", "true");
-      input.setAttribute("data-bwignore", "true");
       input.draggable = false;
       input.addEventListener("mousedown", (e) => e.stopPropagation());
       input.addEventListener("click", (e) => e.stopPropagation());
@@ -319,79 +321,156 @@
 })();
 
 /**
- * Sidebar workspace switcher (mobile-only via CSS). Mirrors the header tabs
- * but as a single <select>. Sources state from window.oneweekWorkspaces, so
- * both UIs stay in sync without extra wiring.
+ * Sidebar workspace list (mobile-only via CSS): switch, rename, reorder,
+ * delete, add. Same order as the header tabs (newest first). Each row's
+ * "⋯" opens its actions inline.
  */
 (() => {
   const section = document.getElementById("sidebar-section-workspaces");
-  const select = document.getElementById("sidebar-workspace-select");
-  const deleteActions = document.getElementById(
-    "sidebar-workspace-delete-actions"
-  );
-  const deleteBtn = document.getElementById("sidebar-workspace-delete");
-  if (!section || !select || !deleteActions || !deleteBtn) return;
+  const listEl = document.getElementById("sidebar-workspace-list");
+  if (!section || !listEl) return;
 
   const ws = window.oneweekWorkspaces;
   if (!ws) return;
 
-  /** Sentinel value used for the "Add..." pseudo-option at the bottom of
-   *  the select. Anything starting with this prefix is treated as "not a
-   *  real workspace id" so it can never collide with a UUID. */
-  const ADD_SENTINEL = "__add__";
+  let openId = null;
+  let renamingId = null;
 
-  function render() {
-    const items = ws.getList();
-    const activeId = ws.getActiveId();
-
-    section.hidden = items.length === 0;
-
-    select.innerHTML = "";
-    for (const item of items) {
-      const opt = document.createElement("option");
-      opt.value = item.id;
-      opt.textContent = item.name;
-      select.appendChild(opt);
-    }
-
-    const addOpt = document.createElement("option");
-    addOpt.value = ADD_SENTINEL;
-    addOpt.textContent = "Add workspace...";
-    select.appendChild(addOpt);
-
-    const next = activeId || items[0]?.id || "";
-    if (next) select.value = next;
-
-    const canDelete = !ws.isDefaultWorkspace(next) && items.length > 1;
-    deleteActions.hidden = !canDelete;
+  function visualOrder() {
+    return ws.getList().reverse();
   }
 
-  select.addEventListener("change", () => {
-    const value = select.value;
-    if (value === ADD_SENTINEL) {
-      // Bounce the select back to the current active workspace before
-      // creating, so the dropdown doesn't briefly read "Add workspace..."
-      // while the async create resolves.
-      const activeId = ws.getActiveId();
-      if (activeId) select.value = activeId;
-      void ws.create();
-      return;
-    }
-    if (value) void ws.setActive(value);
-  });
+  function button(className, text, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    if (className) btn.className = className;
+    btn.textContent = text;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
 
-  deleteBtn.addEventListener("click", async () => {
-    const id = ws.getActiveId();
-    if (!id) return;
-    const items = ws.getList();
-    if (items.length <= 1) return;
-    const item = items.find((w) => w.id === id);
-    if (!item || ws.isDefaultWorkspace(id)) return;
-    const taskCount = await ws.countTasks(id);
-    const msg = ws.formatDeleteConfirmMessage(item.name, taskCount);
-    if (!window.confirm(msg)) return;
-    await ws.remove(id);
-  });
+  async function move(id, delta) {
+    const order = visualOrder().map((w) => w.id);
+    const from = order.indexOf(id);
+    const to = from + delta;
+    if (from === -1 || to < 0 || to >= order.length) return;
+    [order[from], order[to]] = [order[to], order[from]];
+    // DB position 0 = oldest; the list shows newest first.
+    await ws.reorder(order.reverse());
+  }
+
+  async function remove(item) {
+    if (ws.isDefaultWorkspace(item.id) || ws.getList().length <= 1) return;
+    const taskCount = await ws.countTasks(item.id);
+    if (!window.confirm(ws.formatDeleteConfirmMessage(item.name, taskCount))) return;
+    openId = null;
+    await ws.remove(item.id);
+  }
+
+  function startRename(id) {
+    renamingId = id;
+    openId = null;
+    render();
+    const input = listEl.querySelector(".workspace-list-edit");
+    input?.focus();
+    input?.select();
+  }
+
+  async function commitRename(id, value, original) {
+    if (renamingId !== id) return;
+    renamingId = null;
+    const name = value.trim();
+    if (name && name !== original) await ws.rename(id, name);
+    render();
+  }
+
+  function renderRow(item, index, count, activeId) {
+    const li = document.createElement("li");
+    li.className = "workspace-list-item";
+    li.classList.toggle("is-active", item.id === activeId);
+    li.classList.toggle("is-open", item.id === openId);
+
+    const row = document.createElement("div");
+    row.className = "workspace-list-row";
+
+    if (item.id === renamingId) {
+      const input = document.createElement("input");
+      configureWorkspaceNameInput(input);
+      input.className = "sidebar-input workspace-list-edit";
+      input.value = item.name;
+      input.setAttribute("aria-label", "Workspace name");
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          input.blur();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          renamingId = null;
+          render();
+        }
+      });
+      input.addEventListener("blur", () => void commitRename(item.id, input.value, item.name));
+      row.appendChild(input);
+    } else {
+      const name = button("workspace-list-name", item.name, () => void ws.setActive(item.id));
+      if (item.id === activeId) name.setAttribute("aria-current", "true");
+      row.appendChild(name);
+    }
+
+    const more = button("workspace-list-more", "⋯", () => {
+      openId = openId === item.id ? null : item.id;
+      render();
+    });
+    more.setAttribute("aria-label", `Actions for ${item.name}`);
+    more.setAttribute("aria-expanded", String(item.id === openId));
+    row.appendChild(more);
+    li.appendChild(row);
+
+    if (item.id === openId) {
+      const actions = document.createElement("div");
+      actions.className = "sidebar-actions workspace-list-actions";
+      const up = button("", "Move up", () => void move(item.id, -1));
+      const down = button("", "Move down", () => void move(item.id, 1));
+      const del = button("is-danger", "Delete", () => void remove(item));
+      up.disabled = index === 0;
+      down.disabled = index === count - 1;
+      del.disabled = count <= 1 || ws.isDefaultWorkspace(item.id);
+      if (ws.isDefaultWorkspace(item.id)) del.title = "The default workspace can't be deleted";
+      actions.append(button("", "Rename", () => startRename(item.id)), up, down, del);
+      li.appendChild(actions);
+    }
+    return li;
+  }
+
+  function render() {
+    // Keep what is being typed if the list re-renders mid-rename.
+    const editing = listEl.querySelector(".workspace-list-edit");
+    const pendingName = editing?.value;
+
+    const items = visualOrder();
+    const activeId = ws.getActiveId();
+    section.hidden = items.length === 0;
+    listEl.innerHTML = "";
+    items.forEach((item, i) => listEl.appendChild(renderRow(item, i, items.length, activeId)));
+
+    const add = document.createElement("li");
+    add.appendChild(
+      button("workspace-list-add", "+ Add workspace", async () => {
+        const created = await ws.create();
+        if (created?.id) startRename(created.id);
+      })
+    );
+    listEl.appendChild(add);
+
+    if (pendingName != null) {
+      const input = listEl.querySelector(".workspace-list-edit");
+      if (input) {
+        input.value = pendingName;
+        input.focus();
+      }
+    }
+  }
 
   window.addEventListener(ws.WORKSPACE_LIST_CHANGE, render);
   window.addEventListener(ws.WORKSPACE_CHANGE, render);

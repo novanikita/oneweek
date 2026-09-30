@@ -1,13 +1,14 @@
 #!/bin/bash
 # UI regression run against an in-memory fake Supabase (no network, no account).
 #
-# Usage: tests/e2e/run.sh <source-dir> <label> [port] [scenario 1-6]
+# Usage: tests/e2e/run.sh <source-dir> <label> [port] [scenario 1-7]
 #   Copies <source-dir> (e.g. the repo, or `git archive <rev>` output), swaps
 #   the Supabase client for tests/e2e/fake-supabase.js, drives the UI with
 #   tests/e2e/scenario.js in headless Chromium, and writes
 #   tests/e2e/runs/<label>/result.json (DB rows + rendered lists per step).
 #   Compare two runs with: python3 tests/e2e/diff.py A/result.json B/result.json
 #
+# WINDOW_SIZE=390,844 runs at phone width (default 1600,1000).
 # Needs python3 and a Chromium headless shell: set CHROME, or install one with
 # `npx playwright install chromium-headless-shell`.
 set -e
@@ -34,7 +35,7 @@ CH="${CHROME:-$(ls -d "$HOME"/Library/Caches/ms-playwright/chromium_headless_she
 [ -x "$CH" ] || { echo "Set CHROME to a Chromium headless shell binary"; exit 1; }
 (cd "$OUT/site" && exec python3 -m http.server "$PORT" >/dev/null 2>&1) & SRV=$!
 sleep 1
-"$CH" --user-data-dir="$OUT/profile" --window-size=1600,1000 --virtual-time-budget=120000 --dump-dom "http://localhost:$PORT/?s=$SCEN" > "$OUT/dom.html" 2>/dev/null || true
+"$CH" --user-data-dir="$OUT/profile" --window-size="${WINDOW_SIZE:-1600,1000}" --virtual-time-budget=120000 --dump-dom "http://localhost:$PORT/?s=$SCEN" > "$OUT/dom.html" 2>/dev/null || true
 kill $SRV 2>/dev/null || true
 python3 - "$OUT" <<'PY'
 import re, html, json, sys
