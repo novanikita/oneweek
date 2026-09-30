@@ -20,7 +20,7 @@ Pure task-list logic lives in `js/task-model.js` and is covered by Node's built-
 node --test tests/
 ```
 
-UI regressions: `tests/e2e/run.sh` drives the real app in headless Chromium against an in-memory fake Supabase and records DB rows plus rendered lists after each step. Run it on two revisions and diff the results — see the header of `tests/e2e/run.sh`.
+UI regressions: `tests/e2e/run.sh` drives the real app in headless Chromium against an in-memory fake Supabase and records DB rows plus rendered lists after each step. Run it on two revisions and diff the results — see the header of `tests/e2e/run.sh`. With `WINDOW_SIZE=390,844` the same scenarios run at phone width, where drags go through the touch (pointer-event) path; phone and desktop runs should produce identical results.
 
 ## Supabase setup
 

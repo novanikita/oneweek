@@ -23,6 +23,14 @@
     if (!r) throw new Error(`row not found anywhere: ${text}`);
     return r;
   }
+  /** A toolbar button of a row; on phones the toolbar is portaled to <body>. */
+  async function action(r, cls) {
+    if (window.innerWidth > 900) return r.querySelector(cls);
+    r.querySelector(".task-text").focus();
+    await sleep(120);
+    return document.querySelector(`body > .task-row-actions.is-mobile-portaled ${cls}`);
+  }
+
   async function clickEmpty(container) {
     container.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     container.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -54,13 +62,45 @@
     await sleep(200);
   }
   async function setColor(r, index) {
-    r.querySelector(".task-color").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    (await action(r, ".task-color")).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     await sleep(60);
     const sw = document.querySelectorAll(".task-color-popover .task-color-swatch")[index];
     sw.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     await sleep(200);
   }
+  function dropPoint(target, before) {
+    const rect = target.getBoundingClientRect();
+    return {
+      clientX: rect.left + Math.min(20, rect.width / 2),
+      clientY: target.classList.contains("task-row")
+        ? (before ? rect.top + 2 : rect.bottom - 2)
+        : rect.top + Math.min(10, rect.height / 2),
+    };
+  }
+
+  /** Phone layout: drag with a finger on the toolbar's handle (pointer events). */
+  async function touchDrag(fromRow, target, before) {
+    fromRow.querySelector(".task-text").focus();
+    await sleep(150);
+    const handle = document.querySelector("body > .task-row-actions.is-mobile-portaled .task-drag-handle");
+    if (!handle) throw new Error("mobile toolbar was not portaled");
+    const base = { bubbles: true, cancelable: true, pointerId: 7, pointerType: "touch", isPrimary: true, button: 0 };
+    const h = handle.getBoundingClientRect();
+    handle.dispatchEvent(new PointerEvent("pointerdown", { ...base, clientX: h.left + 4, clientY: h.top + 4 }));
+    // Start moving first: the dragged row's styling shifts the layout a bit,
+    // and the finger (like the drop indicator) works on the shifted layout.
+    handle.dispatchEvent(new PointerEvent("pointermove", { ...base, clientX: h.left + 6, clientY: h.top + 12 }));
+    target.scrollIntoView({ block: "center" });
+    await sleep(50);
+    const point = dropPoint(target, before);
+    handle.dispatchEvent(new PointerEvent("pointermove", { ...base, ...point }));
+    await sleep(30);
+    handle.dispatchEvent(new PointerEvent("pointerup", { ...base, ...point }));
+    await sleep(500);
+  }
+
   async function drag(fromRow, target, { before = true } = {}) {
+    if (window.innerWidth <= 900) return touchDrag(fromRow, target, before);
     const handle = fromRow.querySelector(".task-drag-handle");
     handle.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     const dt = new DataTransfer();
@@ -161,7 +201,7 @@
     await click(row(general(), "gamma").querySelector(".task-checkbox"));
 
     log("star alpha (main thing)");
-    await click(row(general(), "alpha").querySelector(".task-star"));
+    await click(await action(row(general(), "alpha"), ".task-star"));
     checkpoints.afterGeneral = snapshot();
 
     log("monday: timed tasks sort on commit");
@@ -188,7 +228,7 @@
     checkpoints.afterCross = snapshot();
 
     log("delete alpha subtree (main thing) then undo");
-    await click(row(mainThing(), "alpha").querySelector(".task-delete"));
+    await click(await action(row(mainThing(), "alpha"), ".task-delete"));
     checkpoints.afterDelete = snapshot();
     await undo();
     checkpoints.afterUndo = snapshot();
@@ -220,7 +260,7 @@
     checkpoints.afterEnter = snapshot();
 
     log("star a day task -> becomes main thing (displaces alpha)");
-    await click(row(day("Monday"), "after exit").querySelector(".task-star"));
+    await click(await action(row(day("Monday"), "after exit"), ".task-star"));
     await sleep(500);
     checkpoints.afterPromote = snapshot();
 
@@ -295,7 +335,7 @@
     checkpoints.reordered = snapshot();
 
     log("star C, then drag it out of the main thing below B");
-    await click(row(general(), "C").querySelector(".task-star"));
+    await click(await action(row(general(), "C"), ".task-star"));
     await sleep(300);
     await drag(row(mainThing(), "C"), row(general(), "B"), { before: false });
     checkpoints.demoted = snapshot();
@@ -305,7 +345,7 @@
     checkpoints.subtreeMoved = snapshot();
 
     log("delete A in Wednesday, undo");
-    await click(row(day("Wednesday"), "A").querySelector(".task-delete"));
+    await click(await action(row(day("Wednesday"), "A"), ".task-delete"));
     await undo();
     checkpoints.wedUndo = snapshot();
 
@@ -317,7 +357,7 @@
     await blur();
 
     log("indent button on y");
-    await click(row(day("Wednesday"), "y").querySelector(".task-indent"));
+    await click(await action(row(day("Wednesday"), "y"), ".task-indent"));
     await blur();
 
     log("Enter on an empty main commits and drops it");
@@ -386,7 +426,7 @@
     await type("o1");
     await key("Tab");
     await blur();
-    await click(row(general(), "Other").querySelector(".task-star"));
+    await click(await action(row(general(), "Other"), ".task-star"));
     await sleep(300);
     await clickEmpty(day("Monday"));
     await type("lw monday");
@@ -453,8 +493,10 @@
     checkpoints.timed = snapshot();
 
     log("two quick stars");
-    row(general(), "R").querySelector(".task-star").click();
-    row(general(), "S").querySelector(".task-star").click();
+    const starR = await action(row(general(), "R"), ".task-star");
+    const starS = await action(row(general(), "S"), ".task-star");
+    starR.click();
+    starS.click();
     await sleep(1000);
     checkpoints.stars = snapshot();
 
@@ -504,7 +546,7 @@
     await blur();
     const target = new URLSearchParams(location.search).get("focus") || "general";
     if (target === "main") {
-      await click(row(general(), "Plan the week").querySelector(".task-star"));
+      await click(await action(row(general(), "Plan the week"), ".task-star"));
       await sleep(400);
     }
     const r = {
@@ -590,13 +632,13 @@
     await clickEmpty(general());
     await type("A");
     await blur();
-    await click(row(general(), "A").querySelector(".task-star"));
+    await click(await action(row(general(), "A"), ".task-star"));
     await clickEmpty(day("Monday"));
     await type("D");
     await blur();
     await sleep(300);
     window.__fakeOffline = true;
-    await click(row(day("Monday"), "D").querySelector(".task-star"));
+    await click(await action(row(day("Monday"), "D"), ".task-star"));
     await sleep(800);
     checkpoints.rolledBack = snapshot();
     window.__fakeOffline = false;

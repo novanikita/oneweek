@@ -35,7 +35,9 @@ CH="${CHROME:-$(ls -d "$HOME"/Library/Caches/ms-playwright/chromium_headless_she
 [ -x "$CH" ] || { echo "Set CHROME to a Chromium headless shell binary"; exit 1; }
 (cd "$OUT/site" && exec python3 -m http.server "$PORT" >/dev/null 2>&1) & SRV=$!
 sleep 1
-"$CH" --user-data-dir="$OUT/profile" --window-size="${WINDOW_SIZE:-1600,1000}" --virtual-time-budget=120000 --dump-dom "http://localhost:$PORT/?s=$SCEN" > "$OUT/dom.html" 2>/dev/null || true
+# Reduced motion: FLIP transitions do not advance under virtual time, which
+# would leave rows mid-animation when a drag measures them.
+"$CH" --force-prefers-reduced-motion --user-data-dir="$OUT/profile" --window-size="${WINDOW_SIZE:-1600,1000}" --virtual-time-budget=120000 --dump-dom "http://localhost:$PORT/?s=$SCEN" > "$OUT/dom.html" 2>/dev/null || true
 kill $SRV 2>/dev/null || true
 python3 - "$OUT" <<'PY'
 import re, html, json, sys
