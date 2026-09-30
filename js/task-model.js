@@ -292,17 +292,30 @@ function expandCarryForwardGroups(rows) {
 }
 
 /**
- * Last week's rows to copy into this week: unfinished groups whose main is
- * not on this week's list yet. A group is skipped whole, so its subtasks can
- * never land under a different parent.
+ * Last week's rows to copy into this week. `lists` are separate task lists
+ * (the week list, then each day) so groups never merge across them. Copies
+ * unfinished groups whose main is not on this week's list yet (nor copied
+ * from an earlier list); a group is kept or skipped whole, so its subtasks
+ * can never land under a different parent. Blank subtasks are dropped, and a
+ * blank main only travels with subtasks.
  */
-function carryForwardRowsToCopy(lastWeekRows, currentWeekRows) {
-  const existing = new Set((currentWeekRows ?? []).map(carryForwardFingerprint));
+function carryForwardRowsToCopy(lists, currentWeekRows) {
+  const seen = new Set((currentWeekRows ?? []).map(carryForwardFingerprint));
   const out = [];
-  let skipGroup = false;
-  for (const row of expandCarryForwardGroups(lastWeekRows)) {
-    if (!row.is_subtask) skipGroup = existing.has(carryForwardFingerprint(row));
-    if (!skipGroup) out.push(row);
+  for (const rows of lists) {
+    const groups = [];
+    for (const row of expandCarryForwardGroups(rows ?? [])) {
+      if (!row.is_subtask) groups.push({ main: row, subs: [] });
+      else groups[groups.length - 1]?.subs.push(row);
+    }
+    for (const { main, subs } of groups) {
+      const keptSubs = subs.filter((r) => !isTaskEmptyText(r.content));
+      if (isTaskEmptyText(main.content) && keptSubs.length === 0) continue;
+      const fp = carryForwardFingerprint(main);
+      if (seen.has(fp)) continue;
+      seen.add(fp);
+      out.push(main, ...keptSubs);
+    }
   }
   return out;
 }

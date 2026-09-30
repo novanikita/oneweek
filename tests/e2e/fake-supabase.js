@@ -85,6 +85,7 @@
     eq(col, val) { this.filters.push((r) => r[col] === val); return this; }
     is(col, val) { this.filters.push((r) => (val === null ? r[col] == null : r[col] === val)); return this; }
     gte(col, val) { this.filters.push((r) => r[col] != null && r[col] >= val); return this; }
+    lte(col, val) { this.filters.push((r) => r[col] != null && r[col] <= val); return this; }
     order(col, { ascending = true } = {}) { this.orders.push([col, ascending]); return this; }
     single() { this.mode = "single"; return this; }
     maybeSingle() { this.mode = "maybe"; return this; }

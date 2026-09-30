@@ -215,16 +215,14 @@ test("sortTimedTasks: subtasks sort by time, open before done", () => {
   assert.deepEqual(texts(m.sortTimedTasks(list)), ["a", "  09:00 s", "  15:00 s", "  08:00 d"]);
 });
 
-test("carryForwardRowsToCopy skips a group whose main already exists", () => {
-  const last = [
-    { content: "Project", is_subtask: false, completed: false },
-    { content: "step 1", is_subtask: true, completed: false },
-    { content: "Other", is_subtask: false, completed: false },
-    { content: "o1", is_subtask: true, completed: false },
-  ];
+test("carryForwardRowsToCopy: whole groups, across lists, no duplicates", () => {
+  const row = (content, { sub = false, done = false } = {}) => ({ content, is_subtask: sub, completed: done });
+  const weekList = [row("Project"), row("step 1", { sub: true }), row("Other"), row("o1", { sub: true }), row("", { sub: true })];
+  const monday = [row("call bob"), row("done", { done: true }), row("Other")];
+  const tuesday = [row("orphan", { sub: true }), row("")];
   const current = [{ content: "Project", is_subtask: false }];
   assert.deepEqual(
-    m.carryForwardRowsToCopy(last, current).map((r) => `${r.is_subtask ? "  " : ""}${r.content}`),
-    ["Other", "  o1"]
+    m.carryForwardRowsToCopy([weekList, monday, tuesday], current).map((r) => `${r.is_subtask ? "  " : ""}${r.content}`),
+    ["Other", "  o1", "call bob", "orphan"]
   );
 });

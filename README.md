@@ -42,6 +42,7 @@ The anon key is public by design; row-level security must protect user data.
 | 5 | `db/2026-08-19-task-is-main.sql` | `tasks.is_main` for this week’s main thing |
 | 6 | `db/2026-09-29-tasks-cleanup.sql` | Orphan/blank rows, strict columns, user FK, user-delete fix |
 | 7 | `db/2026-09-29-user-settings.sql` | `user_settings` table: themes synced across devices |
+| 8 | `db/2026-09-30-next-week-inbox.sql` | Old "Next week" rows → next week's task list. Run **after** deploying the app that reads the column that way; re-runnable |
 
 Each file is idempotent (`if not exists`, safe to re-run).
 

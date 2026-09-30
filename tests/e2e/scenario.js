@@ -386,8 +386,17 @@
     await type("o1");
     await key("Tab");
     await blur();
+    await click(row(general(), "Other").querySelector(".task-star"));
+    await sleep(300);
+    await clickEmpty(day("Monday"));
+    await type("lw monday");
+    await key("Enter");
+    await type("lw done");
+    await blur();
+    await click(row(day("Monday"), "lw done").querySelector(".task-checkbox"));
     await click($("#week-next"));
-    await sleep(500);
+    await sleep(800);
+    checkpoints.moveButtonBefore = !$("#tasks-move-remaining").hidden;
 
     log("this week: P > p1, p2");
     await clickEmpty(general());
@@ -455,6 +464,54 @@
     await blur();
     await click($("#tasks-move-remaining"));
     await sleep(1500);
+    checkpoints.moveButtonAfter = !$("#tasks-move-remaining").hidden;
+  }
+
+  /** "Next week" column is next week's task list. */
+  async function scenario6() {
+    for (let i = 0; i < 100 && !general().querySelector(".tasks-list"); i++) await sleep(50);
+    await sleep(300);
+    checkpoints.moveButtonEmptyLastWeek = !$("#tasks-move-remaining").hidden;
+    await clickEmpty(day("Next week"));
+    await type("for next week 9:00");
+    await key("Enter");
+    await type("second");
+    await blur();
+    checkpoints.thisWeek = snapshot();
+    await click($("#week-next"));
+    await sleep(800);
+    checkpoints.nextWeek = snapshot();
+  }
+
+  /** Screenshot fixture: a few tasks, one row left in edit mode (?focus=general|day|done). */
+  async function scenario5() {
+    for (let i = 0; i < 100 && !general().querySelector(".tasks-list"); i++) await sleep(50);
+    await sleep(300);
+    await clickEmpty(general());
+    await type("Plan the week");
+    await key("Enter");
+    await type("Book tickets");
+    await key("Enter");
+    await type("Reply to Anna");
+    await blur();
+    await click(row(general(), "Reply to Anna").querySelector(".task-checkbox"));
+    await clickEmpty(day("Monday"));
+    await type("9:30 call bob");
+    await key("Enter");
+    await type("lunch with the team");
+    await blur();
+    await setColor(row(day("Monday"), "09:30 call bob"), 5);
+    await blur();
+    const target = new URLSearchParams(location.search).get("focus") || "general";
+    const r = {
+      general: () => row(general(), "Book tickets"),
+      day: () => row(day("Monday"), "09:30 call bob"),
+      done: () => row(general(), "Reply to Anna"),
+    }[target]();
+    await focus(r);
+    r.scrollIntoView({ block: "center" });
+    window.dispatchEvent(new Event("resize"));
+    await sleep(300);
   }
 
   function finish(error) {
@@ -472,7 +529,7 @@
   }
 
   window.addEventListener("load", () => {
-    const which = { 2: scenario2, 3: scenario3, 4: scenario4 }[new URLSearchParams(location.search).get("s")] || scenario;
+    const which = { 2: scenario2, 3: scenario3, 4: scenario4, 5: scenario5, 6: scenario6 }[new URLSearchParams(location.search).get("s")] || scenario;
     which().then(() => finish(null), (err) => finish(err));
   });
 })();

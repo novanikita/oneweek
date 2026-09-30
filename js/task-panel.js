@@ -41,14 +41,41 @@ const WEEKDAY_INDEX = {
   Sunday: 6,
 };
 
-/** DB address of a day column in the visible week ("Next week" = next Monday). */
+/** DB address of a day column in the visible week. */
 function getDayAddress(dayName) {
   const weekStart = getVisibleWeekStartDate();
   const date = new Date(weekStart);
-  const offset = dayName === "Next week" ? 7 : WEEKDAY_INDEX[dayName] ?? 0;
-  date.setDate(weekStart.getDate() + offset);
+  date.setDate(weekStart.getDate() + (WEEKDAY_INDEX[dayName] ?? 0));
   return { type: "daily", dayName, date: toIsoDateFromDate(date) };
 }
+
+/** The week list ("tasks") of the visible week, or of the week after it. */
+function getWeekListAddress(weeksAhead = 0) {
+  const monday = getWeekMondayStart(new Date(), Number(window.__weekOffset || 0) + weeksAhead);
+  return { type: "general", dayName: null, date: toIsoDateFromDate(monday) };
+}
+
+/** Config shared by panels that show a week list (main list, "next week" column). */
+const WEEK_LIST_PANEL_CONFIG = {
+  cacheKey: (userId, address, workspaceId) =>
+    generalTasksCacheKey(userId, address.date, workspaceId),
+  settle: (tasks) => {
+    normalizeMainThingFlags(tasks);
+    return partitionKeepingMainThing(tasks);
+  },
+  partitionInPlace: applyOpenDonePartitionKeepingMainThing,
+  togglePartition: partitionKeepingMainThing,
+};
+
+/** Config shared by day columns: hh:mm moves to the front and sorts the day. */
+const DAY_PANEL_CONFIG = {
+  cacheKey: (userId, address, workspaceId) =>
+    dailyTasksCacheKey(userId, address.dayName, address.date, workspaceId),
+  normalizeText: moveTimeToStart,
+  settle: sortTimedTasks,
+  partitionInPlace: applyOpenDonePartition,
+  togglePartition: partitionUncheckedBeforeChecked,
+};
 
 /**
  * @param {object} cfg
@@ -1458,30 +1485,30 @@ function setTasksInteractivity(enabled) {
 
 /**
  * "Move remaining tasks" — on the current week, copies last week's unfinished
- * general tasks into this week. A copy, not a move, so last week stays as a
- * historical snapshot.
+ * tasks (its task list, then each day) into this week's list. A copy, not a
+ * move, so last week stays as a historical snapshot. The button shows only
+ * while there is something to copy and it hasn't been used for this week.
  */
 function setupMoveRemaining(generalPanel) {
   const button = document.getElementById("tasks-move-remaining");
   const supabase = window.supabaseClient;
   let userId = null;
   let moveGen = 0;
+  let checkGen = 0;
 
   function doneKey(weekIso, workspaceId) {
-    const ws = workspaceId ? `-${workspaceId}` : "";
-    return `oneweek-move-remaining-done-${userId}-${weekIso}${ws}`;
+    return `oneweek-move-remaining-done-${userId}-${weekIso}-${workspaceId}`;
   }
 
   function isDone(weekIso, workspaceId) {
     try {
-      return !!userId && localStorage.getItem(doneKey(weekIso, workspaceId)) === "1";
+      return localStorage.getItem(doneKey(weekIso, workspaceId)) === "1";
     } catch {
       return false;
     }
   }
 
   function markDone(weekIso, workspaceId) {
-    if (!userId) return;
     try {
       localStorage.setItem(doneKey(weekIso, workspaceId), "1");
     } catch {
@@ -1489,14 +1516,73 @@ function setupMoveRemaining(generalPanel) {
     }
   }
 
-  function updateButton() {
+  function onThisWeek() {
+    return Number(window.__weekOffset || 0) === 0;
+  }
+
+  /** Last week's unfinished rows not yet on this week's list; null on error. */
+  async function loadRowsToCopy(workspaceId) {
+    const lastMonday = getWeekMondayStart(new Date(), -1);
+    const lastSunday = new Date(lastMonday);
+    lastSunday.setDate(lastMonday.getDate() + 6);
+    const lastWeekIso = toIsoDateFromDate(lastMonday);
+    const [weekList, days, current] = await Promise.all([
+      supabase
+        .from("tasks")
+        .select("content, is_subtask, color, completed")
+        .eq("user_id", userId)
+        .eq("workspace_id", workspaceId)
+        .eq("type", "general")
+        .eq("date", lastWeekIso)
+        .order("position", { ascending: true })
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("tasks")
+        .select("content, is_subtask, color, completed, date")
+        .eq("user_id", userId)
+        .eq("workspace_id", workspaceId)
+        .eq("type", "daily")
+        .gte("date", lastWeekIso)
+        .lte("date", toIsoDateFromDate(lastSunday))
+        .order("date", { ascending: true })
+        .order("position", { ascending: true })
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("tasks")
+        .select("content, is_subtask, color")
+        .eq("user_id", userId)
+        .eq("workspace_id", workspaceId)
+        .eq("type", "general")
+        .eq("date", getVisibleWeekMondayIso()),
+    ]);
+    const error = weekList.error || days.error || current.error;
+    if (error) {
+      markNetworkFailure(error);
+      console.error("Move remaining: load failed:", error);
+      return null;
+    }
+    markNetworkSuccess();
+
+    const dayLists = new Map();
+    for (const row of days.data ?? []) {
+      if (!dayLists.has(row.date)) dayLists.set(row.date, []);
+      dayLists.get(row.date).push(row);
+    }
+    return carryForwardRowsToCopy([weekList.data ?? [], ...dayLists.values()], current.data);
+  }
+
+  async function updateButton() {
     if (!button) return;
-    const onThisWeek = Number(window.__weekOffset || 0) === 0;
-    button.hidden = !(
-      userId &&
-      onThisWeek &&
-      !isDone(getVisibleWeekMondayIso(), getActiveWorkspaceId())
-    );
+    const gen = ++checkGen;
+    const workspaceId = getActiveWorkspaceId();
+    const weekIso = getVisibleWeekMondayIso();
+    if (!userId || !onThisWeek() || !workspaceId || isDone(weekIso, workspaceId)) {
+      button.hidden = true;
+      return;
+    }
+    const rows = await loadRowsToCopy(workspaceId);
+    if (gen !== checkGen) return;
+    button.hidden = !(rows && rows.length > 0);
   }
 
   function contextStillValid(gen, workspaceId, weekIso) {
@@ -1508,62 +1594,18 @@ function setupMoveRemaining(generalPanel) {
   }
 
   async function run() {
-    if (!supabase || !userId) return;
-    if (Number(window.__weekOffset || 0) !== 0) return;
+    if (!supabase || !userId || !onThisWeek()) return;
     const workspaceId = getActiveWorkspaceId();
-    if (!workspaceId) {
-      console.warn("Move remaining skipped: workspace not ready");
-      return;
-    }
-    const lastWeekIso = toIsoDateFromDate(getWeekMondayStart(new Date(), -1));
+    if (!workspaceId) return;
     const currentWeekIso = getVisibleWeekMondayIso();
-
-    const { data, error } = await supabase
-      .from("tasks")
-      .select("content, is_subtask, color, position, completed")
-      .eq("user_id", userId)
-      .eq("type", "general")
-      .eq("date", lastWeekIso)
-      .eq("workspace_id", workspaceId)
-      .order("position", { ascending: true })
-      .order("created_at", { ascending: true });
-    if (error) {
-      markNetworkFailure(error);
-      console.error("Move remaining: load failed:", error);
-      return;
-    }
-    markNetworkSuccess();
-
-    const rows = (data ?? []).filter((r) => !isTaskEmptyText(r.content));
-    if (rows.length === 0) {
-      markDone(currentWeekIso, workspaceId);
-      return;
-    }
-
-    const { data: existingCurrent, error: existingErr } = await supabase
-      .from("tasks")
-      .select("content, is_subtask, color")
-      .eq("user_id", userId)
-      .eq("type", "general")
-      .eq("date", currentWeekIso)
-      .eq("workspace_id", workspaceId);
-    if (existingErr) {
-      markNetworkFailure(existingErr);
-      console.error("Move remaining: existing-week load failed:", existingErr);
-      return;
-    }
-    markNetworkSuccess();
-
-    const toCopy = carryForwardRowsToCopy(rows, existingCurrent);
-    if (toCopy.length === 0) {
-      markDone(currentWeekIso, workspaceId);
-      return;
-    }
 
     const gen = ++moveGen;
     await flushAllTaskSaves();
+    const toCopy = await loadRowsToCopy(workspaceId);
+    if (!toCopy || toCopy.length === 0) return;
     if (!contextStillValid(gen, workspaceId, currentWeekIso)) return;
 
+    // Copies are plain tasks: last week's main thing arrives unstarred.
     const basePosition = generalPanel.getTaskCount();
     const { error: insertErr } = await supabase.from("tasks").insert(
       toCopy.map((row, i) => ({
@@ -1633,20 +1675,20 @@ function setupMoveRemaining(generalPanel) {
         await run();
       } finally {
         button.disabled = false;
-        updateButton();
+        void updateButton();
       }
     });
   }
 
-  window.addEventListener(WEEK_CHANGE_EVENT, updateButton);
-  window.addEventListener("workspace-change", updateButton);
-  updateButton();
+  window.addEventListener(WEEK_CHANGE_EVENT, () => void updateButton());
+  window.addEventListener("workspace-change", () => void updateButton());
 
   return {
     setAuthUser(nextUserId) {
       userId = nextUserId || null;
-      updateButton();
+      void updateButton();
     },
+    refresh: () => updateButton(),
   };
 }
 
@@ -1671,15 +1713,8 @@ function setupMoveRemaining(generalPanel) {
       dropRoot: tasksField,
       dragLeaveRoot: tasksField,
       mainThing: mainThingEl && mainThingRoot ? { el: mainThingEl, root: mainThingRoot } : null,
-      getAddress: () => ({ type: "general", dayName: null, date: getVisibleWeekMondayIso() }),
-      cacheKey: (userId, address, workspaceId) =>
-        generalTasksCacheKey(userId, address.date, workspaceId),
-      settle: (tasks) => {
-        normalizeMainThingFlags(tasks);
-        return partitionKeepingMainThing(tasks);
-      },
-      partitionInPlace: applyOpenDonePartitionKeepingMainThing,
-      togglePartition: partitionKeepingMainThing,
+      getAddress: () => getWeekListAddress(0),
+      ...WEEK_LIST_PANEL_CONFIG,
     });
     panels.push(general);
     moveRemaining = setupMoveRemaining(general);
@@ -1689,6 +1724,9 @@ function setupMoveRemaining(generalPanel) {
     const tasksEl = dayRect.querySelector(".day-tasks");
     const dayName = dayRect.dataset.day;
     if (!tasksEl || !dayName) continue;
+    // "Next week" is next week's task list itself: when that week comes,
+    // its tasks are already in the week's list.
+    const isNextWeek = dayName === "Next week";
     panels.push(
       createTaskPanel({
         blockId: `day:${dayName}`,
@@ -1701,13 +1739,8 @@ function setupMoveRemaining(generalPanel) {
         clickRoot: dayRect,
         dropRoot: tasksEl,
         dragLeaveRoot: dayRect,
-        getAddress: () => getDayAddress(dayName),
-        cacheKey: (userId, address, workspaceId) =>
-          dailyTasksCacheKey(userId, address.dayName, address.date, workspaceId),
-        normalizeText: moveTimeToStart,
-        settle: sortTimedTasks,
-        partitionInPlace: applyOpenDonePartition,
-        togglePartition: partitionUncheckedBeforeChecked,
+        getAddress: isNextWeek ? () => getWeekListAddress(1) : () => getDayAddress(dayName),
+        ...(isNextWeek ? WEEK_LIST_PANEL_CONFIG : DAY_PANEL_CONFIG),
       })
     );
   }
@@ -1723,6 +1756,7 @@ function setupMoveRemaining(generalPanel) {
     if (window.__dragTaskPayload) return;
     lastRefreshAt = Date.now();
     for (const panel of panels) void panel.reload();
+    void moveRemaining?.refresh();
   }
   document.addEventListener("visibilitychange", refreshOnReturn);
   window.addEventListener("focus", refreshOnReturn);

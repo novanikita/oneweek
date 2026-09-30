@@ -57,8 +57,9 @@ create trigger workspaces_prevent_default_delete
   for each row
   execute function public.prevent_default_workspace_delete();
 
--- Tasks: `general` rows are the week's inbox (date = that week's Monday);
--- `daily` rows belong to a day column (day_name + that day's date).
+-- Tasks: `general` rows are a week's task list (date = that week's Monday;
+-- the "Next week" column shows the following week's list); `daily` rows
+-- belong to a day column (day_name = Monday…Sunday + that day's date).
 
 create table if not exists public.tasks (
   id uuid primary key default gen_random_uuid(),
