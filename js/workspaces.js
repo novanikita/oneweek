@@ -176,7 +176,7 @@
 
   async function init({ supabase } = {}) {
     state.supabase = supabase || window.supabaseClient || null;
-    // Auth session is driven by the single hub in script.js (applyAuthSession).
+    // Auth session is driven by the single hub in auth.js (applyAuthSession).
   }
 
   async function applyAuthSession(session) {

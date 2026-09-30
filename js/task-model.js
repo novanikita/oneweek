@@ -3,7 +3,7 @@
  *
  * A list is a flat array of `{ id, dbId, text, checked, subtask, color,
  * isMain }`. A main task owns the uninterrupted run of `subtask` rows after
- * it. Shared by the general and day panels in script.js; loaded as a classic
+ * it. Shared by the task panels (task-panel.js); loaded as a classic
  * script before it, and `require`-able from Node for tests (tests/).
  */
 
