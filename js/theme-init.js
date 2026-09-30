@@ -4,12 +4,25 @@
   const THEME_CUSTOM_FONT_KEY = "oneweek-custom-font";
   const THEME_CUSTOM_THEMES_KEY = "oneweek-custom-themes";
   const THEME_SELECTED_KEY = "oneweek-theme-selected";
-  const LEGACY_CUSTOM_TEXT_KEY = "oneweek-custom-text";
-  const LEGACY_CUSTOM_BG_KEY = "oneweek-custom-bg";
-  const LEGACY_CUSTOM_NAME_KEY = "oneweek-custom-name";
+  /** When the user last changed the theme choice here (ISO); sync compares it. */
+  const THEME_UPDATED_AT_KEY = "oneweek-theme-updated-at";
   const DEFAULT_TEXT = "#000000";
   const DEFAULT_BG = "#ffffff";
   const DEFAULT_FONT_STACK = '"Proto Grotesk", system-ui, sans-serif';
+
+  /** "Match device": follows the OS light/dark setting. */
+  const AUTO_THEME_KEY = "auto";
+  const AUTO_LIGHT_PRESET = "native-light";
+  const AUTO_DARK_PRESET = "native-dark";
+  /** Theme for devices that never picked one. */
+  const DEFAULT_THEME_KEY = AUTO_THEME_KEY;
+  /** Unsaved "Own..." editor state; stays on this device, never synced. */
+  const OWN_THEME_KEY = "own";
+
+  /** Fired after local theme choices change (sync pushes them). */
+  const THEME_LOCAL_CHANGE = "oneweek-theme-local-change";
+  /** Fired after synced settings from another device were applied. */
+  const THEME_REMOTE_CHANGE = "oneweek-theme-remote-change";
 
   /** Curated Google Fonts with Cyrillic (loaded on demand). id "" = built-in Proto Grotesk. */
   const GOOGLE_FONTS = [
@@ -25,14 +38,6 @@
     { id: "jost", label: "Jost", family: "Jost" },
   ];
 
-  /** Old font ids (no Cyrillic) → current ids. */
-  const LEGACY_FONT_IDS = {
-    "dm-sans": "manrope",
-    "work-sans": "rubik",
-    "fraunces": "cormorant",
-    "space-grotesk": "jost",
-  };
-
   function normalizeHexColor(raw) {
     const s = String(raw ?? "").trim();
     if (!s) return "";
@@ -47,13 +52,8 @@
     return v.toLowerCase();
   }
 
-  function resolveFontId(fontId) {
-    const id = String(fontId ?? "");
-    return LEGACY_FONT_IDS[id] || id;
-  }
-
   function getGoogleFontEntry(fontId) {
-    const id = resolveFontId(fontId);
+    const id = String(fontId ?? "");
     return GOOGLE_FONTS.find((f) => f.id === id) || GOOGLE_FONTS[0];
   }
 
@@ -179,16 +179,6 @@
     },
   };
 
-  const LEGACY_THEME_KEYS = {
-    light: "white",
-    dark: "black",
-    "true-pickmi": "pickmi",
-  };
-
-  function migrateThemeKey(key) {
-    return LEGACY_THEME_KEYS[key] || key;
-  }
-
   function normalizeThemeEntry(raw) {
     if (!raw || typeof raw !== "object") return null;
     const id = String(raw.id ?? "").trim();
@@ -204,20 +194,21 @@
     };
   }
 
-  function parseCustomThemes() {
+  function normalizeThemeList(themes) {
+    return Array.isArray(themes) ? themes.map(normalizeThemeEntry).filter(Boolean) : [];
+  }
+
+  function getCustomThemes() {
     try {
       const raw = localStorage.getItem(THEME_CUSTOM_THEMES_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.map(normalizeThemeEntry).filter(Boolean);
+      return raw ? normalizeThemeList(JSON.parse(raw)) : [];
     } catch (_) {
       return [];
     }
   }
 
-  function saveCustomThemes(themes) {
-    const clean = themes.map(normalizeThemeEntry).filter(Boolean);
+  function writeCustomThemes(themes) {
+    const clean = normalizeThemeList(themes);
     try {
       localStorage.setItem(THEME_CUSTOM_THEMES_KEY, JSON.stringify(clean));
     } catch (_) {
@@ -226,41 +217,10 @@
     return clean;
   }
 
-  function migrateLegacyCustomThemes() {
-    let themes = parseCustomThemes();
-    if (themes.length > 0) return themes;
-
-    try {
-      const t = localStorage.getItem(LEGACY_CUSTOM_TEXT_KEY);
-      const b = localStorage.getItem(LEGACY_CUSTOM_BG_KEY);
-      if (!t || !b) return [];
-
-      const text = normalizeHexColor(t);
-      const bg = normalizeHexColor(b);
-      if (!text || !bg) return [];
-
-      const id = "migrated";
-      const name = String(localStorage.getItem(LEGACY_CUSTOM_NAME_KEY) || "Custom").trim();
-      const fontId = getStoredCustomFontId();
-      themes = [{ id, name, text, bg, fontId }];
-      saveCustomThemes(themes);
-
-      if (localStorage.getItem(THEME_SELECTED_KEY) === "custom") {
-        localStorage.setItem(THEME_SELECTED_KEY, `custom:${id}`);
-      }
-
-      localStorage.removeItem(LEGACY_CUSTOM_TEXT_KEY);
-      localStorage.removeItem(LEGACY_CUSTOM_BG_KEY);
-      localStorage.removeItem(LEGACY_CUSTOM_NAME_KEY);
-    } catch (_) {
-      /* ignore */
-    }
-
-    return themes;
-  }
-
-  function getCustomThemes() {
-    return migrateLegacyCustomThemes();
+  function saveCustomThemes(themes) {
+    const clean = writeCustomThemes(themes);
+    markThemeChanged();
+    return clean;
   }
 
   function findCustomTheme(id) {
@@ -283,57 +243,6 @@
     return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   }
 
-  function initThemeFromStorage() {
-    try {
-      migrateLegacyCustomThemes();
-      let selected = migrateThemeKey(
-        localStorage.getItem(THEME_SELECTED_KEY) || "white"
-      );
-      if (selected !== localStorage.getItem(THEME_SELECTED_KEY)) {
-        localStorage.setItem(THEME_SELECTED_KEY, selected);
-      }
-
-      if (selected === "custom") {
-        const ct = localStorage.getItem(LEGACY_CUSTOM_TEXT_KEY);
-        const cb = localStorage.getItem(LEGACY_CUSTOM_BG_KEY);
-        if (ct && cb) {
-          applyThemeToDocument(
-            normalizeHexColor(ct),
-            normalizeHexColor(cb),
-            getStoredCustomFontId()
-          );
-          return;
-        }
-        selected = "white";
-      }
-
-      if (isCustomThemeKey(selected)) {
-        const theme = findCustomTheme(customThemeIdFromKey(selected));
-        if (theme) {
-          persistTheme(theme.text, theme.bg);
-          applyThemeToDocument(theme.text, theme.bg, theme.fontId || "");
-          return;
-        }
-        localStorage.setItem(THEME_SELECTED_KEY, "white");
-        selected = "white";
-      }
-
-      if (PRESETS[selected]) {
-        applyThemeToDocument(PRESETS[selected].text, PRESETS[selected].bg, "");
-        return;
-      }
-      const t = localStorage.getItem(THEME_STORAGE_TEXT);
-      const b = localStorage.getItem(THEME_STORAGE_BG);
-      const nt = t ? normalizeHexColor(t) : "";
-      const nb = b ? normalizeHexColor(b) : "";
-      if (t && !nt) localStorage.removeItem(THEME_STORAGE_TEXT);
-      if (b && !nb) localStorage.removeItem(THEME_STORAGE_BG);
-      applyThemeToDocument(nt, nb, "");
-    } catch (_) {
-      /* ignore */
-    }
-  }
-
   function persistTheme(textHex, bgHex) {
     try {
       if (textHex) localStorage.setItem(THEME_STORAGE_TEXT, textHex);
@@ -342,6 +251,130 @@
       else localStorage.removeItem(THEME_STORAGE_BG);
     } catch (_) {
       /* ignore */
+    }
+  }
+
+  function getThemeUpdatedAt() {
+    try {
+      return localStorage.getItem(THEME_UPDATED_AT_KEY) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function setThemeUpdatedAt(iso) {
+    try {
+      if (iso) localStorage.setItem(THEME_UPDATED_AT_KEY, iso);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function markThemeChanged() {
+    setThemeUpdatedAt(new Date().toISOString());
+    window.dispatchEvent(new CustomEvent(THEME_LOCAL_CHANGE));
+  }
+
+  function getSelectedThemeKey() {
+    try {
+      return localStorage.getItem(THEME_SELECTED_KEY) || DEFAULT_THEME_KEY;
+    } catch (_) {
+      return DEFAULT_THEME_KEY;
+    }
+  }
+
+  function writeSelectedThemeKey(key) {
+    try {
+      localStorage.setItem(THEME_SELECTED_KEY, key);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function setSelectedThemeKey(key) {
+    writeSelectedThemeKey(key);
+    if (key !== OWN_THEME_KEY) markThemeChanged();
+  }
+
+  const darkSchemeQuery =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : null;
+
+  /** Preset key a selection resolves to right now (`auto` follows the OS). */
+  function effectiveThemeKey(key) {
+    if (key !== AUTO_THEME_KEY) return key;
+    return darkSchemeQuery?.matches ? AUTO_DARK_PRESET : AUTO_LIGHT_PRESET;
+  }
+
+  /** Apply a preset, `auto`, or `custom:<id>`. Returns false if unknown. */
+  function applyThemeKey(key) {
+    const resolved = effectiveThemeKey(key);
+    if (isCustomThemeKey(resolved)) {
+      const theme = findCustomTheme(customThemeIdFromKey(resolved));
+      if (!theme) return false;
+      persistTheme(theme.text, theme.bg);
+      applyThemeToDocument(theme.text, theme.bg, theme.fontId || "");
+      return true;
+    }
+    const preset = PRESETS[resolved];
+    if (!preset) return false;
+    persistTheme(preset.text, preset.bg);
+    applyThemeToDocument(preset.text, preset.bg, "");
+    return true;
+  }
+
+  /** Is `key` something the theme select can show right now? */
+  function isKnownThemeKey(key) {
+    if (key === AUTO_THEME_KEY || key === OWN_THEME_KEY) return true;
+    if (PRESETS[key]) return true;
+    return isCustomThemeKey(key) && !!findCustomTheme(customThemeIdFromKey(key));
+  }
+
+  function applyOwnDraftFromStorage() {
+    try {
+      const nt = normalizeHexColor(localStorage.getItem(THEME_STORAGE_TEXT));
+      const nb = normalizeHexColor(localStorage.getItem(THEME_STORAGE_BG));
+      applyThemeToDocument(nt, nb, "");
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function initThemeFromStorage() {
+    const selected = getSelectedThemeKey();
+    if (selected === OWN_THEME_KEY) {
+      applyOwnDraftFromStorage();
+      return;
+    }
+    if (applyThemeKey(selected)) return;
+    writeSelectedThemeKey(DEFAULT_THEME_KEY);
+    applyThemeKey(DEFAULT_THEME_KEY);
+  }
+
+  /**
+   * Adopt settings synced from another device. `selected` may be null when
+   * that device was mid-edit in "Own..." — then only the theme list changes.
+   */
+  function applyRemoteThemeSettings({ selected, customThemes, updatedAt }) {
+    writeCustomThemes(customThemes);
+    if (selected && getSelectedThemeKey() !== OWN_THEME_KEY) {
+      writeSelectedThemeKey(isKnownThemeKey(selected) ? selected : DEFAULT_THEME_KEY);
+      applyThemeKey(getSelectedThemeKey());
+    }
+    setThemeUpdatedAt(updatedAt);
+    window.dispatchEvent(new CustomEvent(THEME_REMOTE_CHANGE));
+  }
+
+  function onColorSchemeChange() {
+    if (getSelectedThemeKey() === AUTO_THEME_KEY) applyThemeKey(AUTO_THEME_KEY);
+  }
+
+  if (darkSchemeQuery) {
+    if (typeof darkSchemeQuery.addEventListener === "function") {
+      darkSchemeQuery.addEventListener("change", onColorSchemeChange);
+    } else if (typeof darkSchemeQuery.addListener === "function") {
+      darkSchemeQuery.addListener(onColorSchemeChange);
     }
   }
 
@@ -381,18 +414,24 @@
     THEME_STORAGE_TEXT,
     THEME_STORAGE_BG,
     THEME_CUSTOM_FONT_KEY,
-    THEME_CUSTOM_THEMES_KEY,
-    THEME_SELECTED_KEY,
     DEFAULT_TEXT,
     DEFAULT_BG,
-    DEFAULT_FONT_STACK,
+    DEFAULT_THEME_KEY,
+    AUTO_THEME_KEY,
+    OWN_THEME_KEY,
+    THEME_LOCAL_CHANGE,
+    THEME_REMOTE_CHANGE,
     GOOGLE_FONTS,
     PRESETS,
-    migrateThemeKey,
     normalizeHexColor,
     applyThemeToDocument,
-    applyFontById,
-    getGoogleFontEntry,
+    applyThemeKey,
+    isKnownThemeKey,
+    getSelectedThemeKey,
+    setSelectedThemeKey,
+    getThemeUpdatedAt,
+    setThemeUpdatedAt,
+    applyRemoteThemeSettings,
     getStoredCustomFontId,
     getCustomThemes,
     saveCustomThemes,
@@ -401,9 +440,6 @@
     customThemeIdFromKey,
     customThemeSelectKey,
     generateThemeId,
-    initThemeFromStorage,
-    persistTheme,
     getCurrentHexForInput,
-    syncTaskHighlightScheme,
   };
 })();

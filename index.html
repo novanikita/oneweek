@@ -49,10 +49,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="./css/colors.css?v=20260812-1" />
-    <link rel="stylesheet" href="./css/styles.css?v=20260821-2" />
+    <link rel="stylesheet" href="./css/styles.css?v=20260930-2" />
     <!-- Pinned @supabase/supabase-js@2.49.8 (self-hosted; avoid floating CDN). -->
     <script src="./js/vendor/supabase.js?v=2.49.8"></script>
-    <script src="./js/theme-init.js?v=20260813-1"></script>
+    <script src="./js/theme-init.js?v=20260929-1"></script>
   </head>
   <body>
     <script>
@@ -294,17 +294,8 @@
           id="sidebar-section-workspaces"
           hidden
         >
-          <p class="sidebar-section-title">Workspace</p>
-          <div class="sidebar-select-wrap">
-            <select id="sidebar-workspace-select" class="sidebar-select"></select>
-          </div>
-          <div
-            class="sidebar-actions"
-            id="sidebar-workspace-delete-actions"
-            hidden
-          >
-            <button type="button" id="sidebar-workspace-delete">Delete</button>
-          </div>
+          <p class="sidebar-section-title">Workspaces</p>
+          <ul id="sidebar-workspace-list" class="workspace-list"></ul>
         </div>
 
         <div class="sidebar-section">
@@ -419,9 +410,16 @@
       </div>
     </div>
 
-    <script src="./js/workspaces.js?v=20260813-17"></script>
-    <script src="./js/script.js?v=20260819-3"></script>
-    <script src="./js/workspace-tabs.js?v=20260813-12"></script>
+    <script src="./js/workspaces.js?v=20260930-1"></script>
+    <script src="./js/task-model.js?v=20260930-2"></script>
+    <script src="./js/core.js?v=20260930-3"></script>
+    <script src="./js/auth.js?v=20260930-3"></script>
+    <script src="./js/task-ui.js?v=20260930-3"></script>
+    <script src="./js/week-nav.js?v=20260930-3"></script>
+    <script src="./js/sidebar.js?v=20260930-3"></script>
+    <script src="./js/task-panel.js?v=20260930-3"></script>
+    <script src="./js/workspace-tabs.js?v=20260930-1"></script>
+    <script src="./js/theme-sync.js?v=20260929-1"></script>
     <script>
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => {

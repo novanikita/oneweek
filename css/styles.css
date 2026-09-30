@@ -49,12 +49,6 @@ body.week-offset-away .task-checkbox:not(.checked) {
   background: var(--color-background);
 }
 
-body.week-offset-away .task-commit,
-body.week-offset-away .task-delete {
-  background: var(--color-background);
-  color: var(--color-text);
-}
-
 .layout {
   display: grid;
   /* minmax(0, …) prevents grid tracks from being forced taller/wider by their
@@ -1013,9 +1007,100 @@ h1 {
   margin-top: 0.2em;
 }
 
-#theme-delete-actions[hidden],
-#sidebar-workspace-delete-actions[hidden] {
+#theme-delete-actions[hidden] {
   display: none !important;
+}
+
+/* Sidebar workspace list (mobile; desktop uses the header tabs). */
+.workspace-list {
+  list-style: none;
+  margin-block: 0 0.6em;
+  margin-inline: -0.5em;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.workspace-list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+}
+
+.workspace-list-name,
+.workspace-list-more,
+.workspace-list-add {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0.35em;
+  cursor: pointer;
+}
+
+.workspace-list-name,
+.workspace-list-add {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.45em 0.5em;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-list-add {
+  width: 100%;
+  opacity: 0.6;
+}
+
+.workspace-list-more {
+  flex: 0 0 auto;
+  width: 2.2em;
+  height: 2.2em;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.55;
+}
+
+.workspace-list-name:hover,
+.workspace-list-more:hover,
+.workspace-list-add:hover,
+.workspace-list-item.is-open .workspace-list-more {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  opacity: 1;
+}
+
+.workspace-list-item.is-active .workspace-list-name {
+  font-weight: 600;
+}
+
+.workspace-list-name:focus-visible,
+.workspace-list-more:focus-visible,
+.workspace-list-add:focus-visible {
+  outline: 0.12em solid var(--color-text);
+  outline-offset: 0.08em;
+}
+
+.workspace-list-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0.1em 0;
+}
+
+.workspace-list-actions {
+  margin: 0;
+  padding: 0.2em 0.5em 0.5em;
+}
+
+.workspace-list-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.workspace-list-actions .is-danger:not(:disabled) {
+  color: #c62828;
 }
 
 .sidebar-actions button {
@@ -1030,31 +1115,6 @@ h1 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-.task-row-actions .task-commit,
-.task-row-actions .task-delete,
-.task-row-actions .task-star,
-.task-row-actions .task-indent {
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border-radius: 0.4em;
-  border: 0.07em solid var(--color-border);
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  -webkit-appearance: none;
-  appearance: none;
-}
-
-.task-row-actions .task-star {
-  position: relative;
 }
 
 .sidebar-actions button:disabled {
@@ -1732,7 +1792,6 @@ h1 {
     margin-top: 0;
   }
 
-
   .tasks-field {
     min-height: 0;
     height: auto;
@@ -1833,38 +1892,6 @@ h1 {
   min-height: 0;
   display: flex;
   align-items: center;
-}
-
-.task-row-actions {
-  display: none;
-  position: absolute;
-  top: calc(100% + 0.3em);
-  /* Stay inside the row: day cells clip overflow-x, and 6 buttons no longer
-     fit when the popover is centered at intrinsic width. */
-  left: 0;
-  right: 0;
-  transform: none;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  justify-content: center;
-  gap: 0.28em;
-  align-items: center;
-  padding: 0.3em 0.35em;
-  box-sizing: border-box;
-  max-width: 100%;
-  background: var(--color-background);
-  border: 0.07em solid var(--color-border);
-  border-radius: 0.55em;
-  pointer-events: none;
-  z-index: 6;
-  white-space: nowrap;
-}
-
-/* Completed rows are pinned to the bottom of the field; their popover would
-   otherwise overflow the scroll container, so flip it above the row. */
-.task-row.completed .task-row-actions {
-  top: auto;
-  bottom: calc(100% + 0.3em);
 }
 
 .task-row:has(.task-text:focus) .task-row-actions,
@@ -1973,74 +2000,6 @@ body:has(.task-row-dragging) > .task-row-actions.is-mobile-portaled {
   mask: url("../check-mark.svg") center / contain no-repeat;
 }
 
-.task-row-actions .task-commit,
-.task-row-actions .task-delete,
-.task-row-actions .task-color,
-.task-row-actions .task-star,
-.task-row-actions .task-indent,
-.task-row-actions .task-drag-handle {
-  flex: 0 1 1.65em;
-  width: 1.65em;
-  max-width: 1.65em;
-  height: 1.2em;
-  min-width: 0;
-  min-height: 1.2em;
-  padding: 0;
-}
-
-.task-row-actions .task-drag-handle {
-  border: 0.07em solid color-mix(in srgb, var(--color-text) 35%, transparent);
-  border-radius: 0.4em;
-}
-
-.task-commit,
-.task-delete,
-.task-color,
-.task-star,
-.task-indent,
-.task-drag-handle {
-  color: var(--color-text);
-  opacity: 0.8;
-  border-color: color-mix(in srgb, var(--color-text) 35%, transparent);
-}
-
-.task-color {
-  font: inherit;
-  background: transparent;
-  border: 0.07em solid color-mix(in srgb, var(--color-text) 35%, transparent);
-  border-radius: 0.4em;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  line-height: 1;
-}
-
-.task-color-dot {
-  display: block;
-  width: 0.7em;
-  height: 0.7em;
-  border-radius: 50%;
-  border: 0.08em solid currentColor;
-  background: transparent;
-  box-sizing: border-box;
-}
-
-.task-color-dot[data-filled="1"] {
-  border-color: rgba(0, 0, 0, 0.25);
-}
-
-.task-row:has(.task-text:focus) .task-color:hover,
-.task-row:has(.task-commit:focus) .task-color:hover,
-.task-row:has(.task-delete:focus) .task-color:hover,
-.task-row:has(.task-color:focus) .task-color:hover,
-.task-row:has(.task-drag-handle:focus) .task-color:hover,
-.task-row.task-row-color-open .task-color {
-  color: var(--color-text);
-  border-color: var(--color-text);
-  opacity: 1;
-}
-
 .task-color-popover {
   position: fixed;
   z-index: 1000;
@@ -2128,27 +2087,6 @@ body:has(.task-row-dragging) > .task-row-actions.is-mobile-portaled {
   background-color: rgba(255, 255, 255, 0.95);
 }
 
-.task-row[data-color] .task-commit,
-.task-row[data-color] .task-delete,
-.task-row[data-color] .task-color,
-.task-row[data-color] .task-star,
-.task-row[data-color] .task-indent {
-  color: #1a1a1a;
-  border-color: rgba(0, 0, 0, 0.35);
-}
-
-.task-row[data-color] .task-commit::after,
-.task-row[data-color] .task-delete::after,
-.task-row[data-color] .task-star::after,
-.task-row[data-color] .task-indent::after,
-.task-row[data-color] .task-drag-handle-icon {
-  background-color: #1a1a1a;
-}
-
-.task-row[data-color] .task-color-dot {
-  border-color: #1a1a1a;
-}
-
 html[data-task-highlights="dark"] .task-row[data-color] {
   color: #f0f2f4;
 }
@@ -2176,239 +2114,8 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
   background-color: #1a1a1a;
 }
 
-html[data-task-highlights="dark"] .task-row[data-color] .task-commit,
-html[data-task-highlights="dark"] .task-row[data-color] .task-delete,
-html[data-task-highlights="dark"] .task-row[data-color] .task-color,
-html[data-task-highlights="dark"] .task-row[data-color] .task-star,
-html[data-task-highlights="dark"] .task-row[data-color] .task-indent {
-  color: #f0f2f4;
-  border-color: rgba(255, 255, 255, 0.35);
-}
-
-html[data-task-highlights="dark"] .task-row[data-color] .task-commit::after,
-html[data-task-highlights="dark"] .task-row[data-color] .task-delete::after,
-html[data-task-highlights="dark"] .task-row[data-color] .task-star::after,
-html[data-task-highlights="dark"] .task-row[data-color] .task-indent::after,
-html[data-task-highlights="dark"] .task-row[data-color] .task-drag-handle-icon {
-  background-color: #f0f2f4;
-}
-
-html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
-  border-color: #f0f2f4;
-}
-
-/* The actions popover floats over the theme background, not the colored row,
-   so buttons inside it follow the theme colors regardless of the row color. */
-.task-row[data-color] .task-row-actions .task-commit,
-.task-row[data-color] .task-row-actions .task-delete,
-.task-row[data-color] .task-row-actions .task-color,
-.task-row[data-color] .task-row-actions .task-star,
-.task-row[data-color] .task-row-actions .task-indent {
-  color: var(--color-text);
-  border-color: color-mix(in srgb, var(--color-text) 35%, transparent);
-}
-
-.task-row[data-color] .task-row-actions .task-commit::after,
-.task-row[data-color] .task-row-actions .task-delete::after,
-.task-row[data-color] .task-row-actions .task-star::after,
-.task-row[data-color] .task-row-actions .task-indent::after,
-.task-row[data-color] .task-row-actions .task-drag-handle-icon {
-  background-color: var(--color-text);
-}
-
-.task-row[data-color] .task-row-actions .task-color-dot {
-  border-color: var(--color-text);
-}
-
-.task-row:has(.task-text:focus) .task-commit,
-.task-row:has(.task-text:focus) .task-delete,
-.task-row:has(.task-text:focus) .task-star,
-.task-row:has(.task-text:focus) .task-drag-handle,
-.task-row:has(.task-commit:focus) .task-commit,
-.task-row:has(.task-commit:focus) .task-delete,
-.task-row:has(.task-commit:focus) .task-star,
-.task-row:has(.task-commit:focus) .task-drag-handle,
-.task-row:has(.task-delete:focus) .task-commit,
-.task-row:has(.task-delete:focus) .task-delete,
-.task-row:has(.task-delete:focus) .task-star,
-.task-row:has(.task-delete:focus) .task-drag-handle,
-.task-row:has(.task-star:focus) .task-commit,
-.task-row:has(.task-star:focus) .task-delete,
-.task-row:has(.task-star:focus) .task-star,
-.task-row:has(.task-star:focus) .task-drag-handle,
-.task-row:has(.task-drag-handle:focus) .task-commit,
-.task-row:has(.task-drag-handle:focus) .task-delete,
-.task-row:has(.task-drag-handle:focus) .task-star,
-.task-row:has(.task-drag-handle:focus) .task-drag-handle,
-.task-row.task-row-reorder-active .task-commit,
-.task-row.task-row-reorder-active .task-delete,
-.task-row.task-row-reorder-active .task-star,
-.task-row.task-row-reorder-active .task-drag-handle,
-.task-row.task-row-dragging .task-commit,
-.task-row.task-row-dragging .task-delete,
-.task-row.task-row-dragging .task-star,
-.task-row.task-row-dragging .task-drag-handle {
-  opacity: 0.8;
-}
-
-.task-row-actions .task-commit::after {
-  content: "";
-  display: block;
-  width: 0.75em;
-  height: 0.75em;
-  background-color: var(--color-text);
-  -webkit-mask: url("../check-mark.svg") center / contain no-repeat;
-  mask: url("../check-mark.svg") center / contain no-repeat;
-}
-
-.task-row-actions .task-delete::after {
-  content: "";
-  display: block;
-  width: 0.75em;
-  height: 0.75em;
-  background-color: var(--color-text);
-  -webkit-mask: url("../trash.svg") center / contain no-repeat;
-  mask: url("../trash.svg") center / contain no-repeat;
-}
-
-.task-row-actions .task-star::after {
-  content: "";
-  display: block;
-  width: 1.05em;
-  height: 1.05em;
-  background-color: var(--color-text);
-  -webkit-mask: url("../star.svg?v=2") center / contain no-repeat;
-  mask: url("../star.svg?v=2") center / contain no-repeat;
-}
-
-.task-row-actions .task-indent::after {
-  content: "";
-  display: block;
-  width: 0.82em;
-  height: 0.82em;
-  background-color: var(--color-text);
-  -webkit-mask: url("../subtask.svg") center / contain no-repeat;
-  mask: url("../subtask.svg") center / contain no-repeat;
-}
-
-.task-row:has(.task-text:focus) .task-indent:hover,
-.task-row:has(.task-commit:focus) .task-indent:hover,
-.task-row:has(.task-delete:focus) .task-indent:hover,
-.task-row:has(.task-color:focus) .task-indent:hover,
-.task-row:has(.task-star:focus) .task-indent:hover,
-.task-row:has(.task-indent:focus) .task-indent:hover,
-.task-row:has(.task-drag-handle:focus) .task-indent:hover,
-.task-row.task-row-reorder-active .task-indent:hover,
-.task-row.task-row-dragging .task-indent:hover {
-  color: var(--color-text);
-  border-color: var(--color-text);
-  opacity: 1;
-}
-
-.task-star.is-on::before {
-  content: "";
-  position: absolute;
-  width: 1.15em;
-  height: 0.09em;
-  background: var(--color-text);
-  border-radius: 999em;
-  transform: rotate(-38deg);
-  pointer-events: none;
-}
-
-.task-row:has(.task-text:focus) .task-star:hover,
-.task-row:has(.task-commit:focus) .task-star:hover,
-.task-row:has(.task-delete:focus) .task-star:hover,
-.task-row:has(.task-star:focus) .task-star:hover,
-.task-row:has(.task-drag-handle:focus) .task-star:hover,
-.task-row.task-row-reorder-active .task-star:hover,
-.task-row.task-row-dragging .task-star:hover {
-  color: var(--color-text);
-  border-color: var(--color-text);
-  opacity: 1;
-}
-
-.task-row:has(.task-text:focus) .task-delete:hover,
-.task-row:has(.task-commit:focus) .task-delete:hover,
-.task-row:has(.task-delete:focus) .task-delete:hover,
-.task-row.task-row-reorder-active .task-delete:hover,
-.task-row.task-row-dragging .task-delete:hover {
-  color: #c62828;
-  border-color: #c62828;
-  opacity: 1;
-}
-
-.task-row:has(.task-text:focus) .task-delete:hover::after,
-.task-row:has(.task-commit:focus) .task-delete:hover::after,
-.task-row:has(.task-delete:focus) .task-delete:hover::after,
-.task-row.task-row-reorder-active .task-delete:hover::after,
-.task-row.task-row-dragging .task-delete:hover::after {
-  background-color: #c62828;
-}
-
-.task-row:has(.task-text:focus) .task-commit:hover,
-.task-row:has(.task-commit:focus) .task-commit:hover,
-.task-row:has(.task-delete:focus) .task-commit:hover,
-.task-row:has(.task-drag-handle:focus) .task-commit:hover,
-.task-row.task-row-reorder-active .task-commit:hover,
-.task-row.task-row-dragging .task-commit:hover {
-  color: var(--color-text);
-  border-color: var(--color-text);
-  opacity: 1;
-}
-
-.task-row:has(.task-text:focus) .task-commit:hover::after,
-.task-row:has(.task-commit:focus) .task-commit:hover::after,
-.task-row:has(.task-delete:focus) .task-commit:hover::after,
-.task-row:has(.task-drag-handle:focus) .task-commit:hover::after,
-.task-row.task-row-reorder-active .task-commit:hover::after,
-.task-row.task-row-dragging .task-commit:hover::after {
-  background-color: var(--color-text);
-}
-
-.task-drag-handle {
-  width: 1.2em;
-  height: 1.2em;
-  min-width: 1.2em;
-  min-height: 1.2em;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: grab;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text);
-  user-select: none;
-  -webkit-user-select: none;
-  touch-action: none;
-  -webkit-user-drag: element;
-}
-
-.task-drag-handle:active {
-  cursor: grabbing;
-}
-
 .task-row-dragging {
   opacity: 0.65;
-}
-
-.task-drag-handle-icon {
-  display: block;
-  width: 0.55em;
-  height: 0.8em;
-  background-color: var(--color-text);
-  pointer-events: none;
-  -webkit-mask: url("../drag-handle.svg") center / contain no-repeat;
-  mask: url("../drag-handle.svg") center / contain no-repeat;
-}
-
-.task-row:has(.task-text:focus) .task-drag-handle:hover,
-.task-row:has(.task-commit:focus) .task-drag-handle:hover,
-.task-row:has(.task-delete:focus) .task-drag-handle:hover,
-.task-row:has(.task-drag-handle:focus) .task-drag-handle:hover {
-  opacity: 1;
 }
 
 .task-text {
@@ -2599,50 +2306,6 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
     height: 1.4em;
   }
 
-  .task-row-actions {
-    gap: 0.35em;
-    padding: 0.35em 0.4em;
-  }
-
-  .task-row-actions .task-commit,
-  .task-row-actions .task-delete,
-  .task-row-actions .task-color,
-  .task-row-actions .task-star,
-  .task-row-actions .task-indent,
-  .task-row-actions .task-drag-handle {
-    flex: 0 1 2em;
-    width: 2em;
-    max-width: 2em;
-    height: 1.65em;
-    min-width: 0;
-    min-height: 1.65em;
-  }
-
-  .task-row-actions .task-commit::after,
-  .task-row-actions .task-delete::after {
-    width: 0.88em;
-    height: 0.88em;
-  }
-
-  .task-row-actions .task-star::after {
-    width: 1.15em;
-    height: 1.15em;
-  }
-
-  .task-row-actions .task-indent::after {
-    width: 0.92em;
-    height: 0.92em;
-  }
-
-  .task-row-actions .task-color-dot {
-    width: 0.82em;
-    height: 0.82em;
-  }
-
-  .task-row-actions .task-drag-handle-icon {
-    width: 0.65em;
-    height: 0.95em;
-  }
 }
 
 @media (max-width: 900px) {
@@ -2712,86 +2375,6 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
     border-radius: 0.25em;
   }
 
-  .task-row-actions {
-    position: absolute;
-    top: calc(100% + 0.3em);
-    left: 0;
-    right: 0;
-    width: auto;
-    transform: none;
-    gap: 0.6em;
-    padding: 0.7em 0.8em;
-    justify-content: space-between;
-    border-radius: 0.7em;
-    z-index: 1;
-  }
-
-  /* Portaled to body; top/left/width set in document coords by JS. */
-  .task-row-actions.is-mobile-portaled {
-    display: flex;
-    pointer-events: auto;
-    position: absolute;
-    z-index: 1000;
-    top: auto;
-    bottom: auto;
-    right: auto;
-    transform: none;
-  }
-
-  .task-row.completed .task-row-actions {
-    top: auto;
-    bottom: calc(100% + 0.3em);
-  }
-
-  .task-row.completed .task-row-actions.is-mobile-portaled {
-    bottom: auto;
-  }
-
-  .task-row-actions .task-commit,
-  .task-row-actions .task-delete,
-  .task-row-actions .task-color,
-  .task-row-actions .task-star,
-  .task-row-actions .task-indent,
-  .task-row-actions .task-drag-handle {
-    flex: 1 1 0;
-    width: auto;
-    min-width: 0;
-    height: 2.2em;
-    min-height: 2.2em;
-    padding: 0;
-  }
-
-  .task-row-actions .task-drag-handle {
-    border: 0.07em solid color-mix(in srgb, var(--color-text) 35%, transparent);
-    border-radius: 0.4em;
-  }
-
-  .task-row-actions .task-commit::after,
-  .task-row-actions .task-delete::after {
-    width: 1em;
-    height: 1em;
-  }
-
-  .task-row-actions .task-star::after {
-    width: 1.25em;
-    height: 1.25em;
-  }
-
-  .task-row-actions .task-indent::after {
-    width: 1em;
-    height: 1em;
-  }
-
-  .task-row-actions .task-color-dot {
-    width: 0.9em;
-    height: 0.9em;
-  }
-
-  .task-row-actions .task-drag-handle-icon {
-    width: 0.75em;
-    height: 1.1em;
-  }
-
   /* Room for the actions popover below the last task in a list. */
   .tasks-list {
     padding-bottom: 3em;
@@ -2818,5 +2401,236 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-color-dot {
   html {
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Task edit toolbar — under the row being edited: done, color, subtask, main
+   thing, drag, and (set apart) delete. As wide as its buttons, never wider
+   than the row; plain icon buttons that pick up the theme text color, also
+   on colored rows. Visibility rules live with `.task-row` above.
+   ------------------------------------------------------------------------ */
+.task-row-actions {
+  --toolbar-btn: 1.85em;
+  display: none;
+  position: absolute;
+  top: calc(100% + 0.3em);
+  left: 0;
+  z-index: 6;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: 100%;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.1em;
+  padding: 0.2em;
+  color: var(--color-text);
+  background: var(--color-background);
+  border: 0.07em solid var(--color-border);
+  border-radius: 0.6em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Completed rows sit at the bottom of the list: open upward. */
+.task-row.completed .task-row-actions {
+  top: auto;
+  bottom: calc(100% + 0.3em);
+}
+
+.task-row-actions > button,
+.task-row-actions > .task-drag-handle {
+  position: relative;
+  flex: 0 1 var(--toolbar-btn);
+  width: var(--toolbar-btn);
+  min-width: 1.35em;
+  height: var(--toolbar-btn);
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  font: inherit;
+  line-height: 1;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0.4em;
+  opacity: 0.65;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+
+.task-row-actions > button:hover,
+.task-row-actions > .task-drag-handle:hover,
+.task-row-actions > button:focus-visible,
+.task-row.task-row-color-open .task-row-actions > .task-color {
+  opacity: 1;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.task-row-actions > button:focus-visible {
+  outline: 0.1em solid var(--color-text);
+  outline-offset: -0.1em;
+}
+
+/* Delete is set apart by a hairline and turns red on hover. */
+.task-row-actions > .task-delete {
+  margin-left: 0.35em;
+}
+
+.task-row-actions > .task-delete::before {
+  content: "";
+  position: absolute;
+  left: -0.26em;
+  top: 22%;
+  bottom: 22%;
+  width: 0.07em;
+  background: var(--color-border);
+  pointer-events: none;
+}
+
+.task-row-actions > .task-delete:hover {
+  color: #c62828;
+  background: color-mix(in srgb, #c62828 10%, transparent);
+}
+
+/* Icons are masks painted with the button's current color. */
+.task-row-actions .task-commit::after,
+.task-row-actions .task-delete::after,
+.task-row-actions .task-indent::after,
+.task-row-actions .task-star::after,
+.task-drag-handle-icon {
+  content: "";
+  display: block;
+  background-color: currentColor;
+  pointer-events: none;
+}
+
+.task-row-actions .task-commit::after {
+  width: 0.85em;
+  height: 0.85em;
+  -webkit-mask: url("../check-mark.svg") center / contain no-repeat;
+  mask: url("../check-mark.svg") center / contain no-repeat;
+}
+
+.task-row-actions .task-delete::after {
+  width: 0.9em;
+  height: 0.9em;
+  -webkit-mask: url("../trash.svg") center / contain no-repeat;
+  mask: url("../trash.svg") center / contain no-repeat;
+}
+
+.task-row-actions .task-indent::after {
+  width: 0.9em;
+  height: 0.9em;
+  -webkit-mask: url("../subtask.svg") center / contain no-repeat;
+  mask: url("../subtask.svg") center / contain no-repeat;
+}
+
+.task-row-actions .task-star::after {
+  width: 1.05em;
+  height: 1.05em;
+  -webkit-mask: url("../star.svg?v=2") center / contain no-repeat;
+  mask: url("../star.svg?v=2") center / contain no-repeat;
+}
+
+/* This week's main thing: the star is crossed out ("remove"). */
+.task-row-actions .task-star.is-on {
+  opacity: 1;
+}
+
+.task-row-actions .task-star.is-on::before {
+  content: "";
+  position: absolute;
+  width: 1.15em;
+  height: 0.09em;
+  background: currentColor;
+  border-radius: 999em;
+  transform: rotate(-38deg);
+  pointer-events: none;
+}
+
+.task-color-dot {
+  display: block;
+  width: 0.85em;
+  height: 0.85em;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 0.09em solid currentColor;
+  background: transparent;
+}
+
+.task-color-dot[data-filled="1"] {
+  border-color: color-mix(in srgb, var(--color-text) 30%, transparent);
+}
+
+.task-drag-handle {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: element;
+}
+
+.task-drag-handle:active {
+  cursor: grabbing;
+}
+
+.task-drag-handle-icon {
+  width: 0.6em;
+  height: 0.9em;
+  -webkit-mask: url("../drag-handle.svg") center / contain no-repeat;
+  mask: url("../drag-handle.svg") center / contain no-repeat;
+}
+
+@media (max-width: 900px) {
+  /* Thumb-sized buttons. Portaled to <body> by JS, which places the strip
+     under the row and keeps it inside the viewport. */
+  .task-row-actions {
+    --toolbar-btn: 2.6em;
+    gap: 0.2em;
+    padding: 0.3em;
+    border-radius: 0.8em;
+    max-width: none;
+    z-index: 1;
+  }
+
+  .task-row-actions.is-mobile-portaled {
+    display: flex;
+    pointer-events: auto;
+    z-index: 1000;
+    top: auto;
+    bottom: auto;
+  }
+
+  .task-row.completed .task-row-actions.is-mobile-portaled {
+    bottom: auto;
+  }
+
+  .task-row-actions .task-commit::after,
+  .task-row-actions .task-delete::after,
+  .task-row-actions .task-indent::after {
+    width: 1.05em;
+    height: 1.05em;
+  }
+
+  .task-row-actions .task-star::after {
+    width: 1.25em;
+    height: 1.25em;
+  }
+
+  .task-color-dot {
+    width: 1em;
+    height: 1em;
+  }
+
+  .task-drag-handle-icon {
+    width: 0.75em;
+    height: 1.1em;
   }
 }

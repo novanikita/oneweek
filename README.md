@@ -12,6 +12,16 @@ python3 -m http.server 8080
 
 Then open `http://localhost:8080/index.html`.
 
+## Tests
+
+Pure task-list logic lives in `js/task-model.js` and is covered by Node's built-in test runner (Node 18+, no dependencies):
+
+```bash
+node --test tests/
+```
+
+UI regressions: `tests/e2e/run.sh` drives the real app in headless Chromium against an in-memory fake Supabase and records DB rows plus rendered lists after each step. Run it on two revisions and diff the results — see the header of `tests/e2e/run.sh`. With `WINDOW_SIZE=390,844` the same scenarios run at phone width, where drags go through the touch (pointer-event) path; phone and desktop runs should produce identical results.
+
 ## Supabase setup
 
 1. Create a Supabase project.
@@ -30,8 +40,14 @@ The anon key is public by design; row-level security must protect user data.
 | 3 | `db/2026-08-13-workspace-is-default.sql` | Optional `workspaces.is_default` flag |
 | 4 | `db/2026-08-13-workspace-integrity.sql` | Task/workspace ownership integrity |
 | 5 | `db/2026-08-19-task-is-main.sql` | `tasks.is_main` for this week’s main thing |
+| 6 | `db/2026-09-29-tasks-cleanup.sql` | Orphan/blank rows, strict columns, user FK, user-delete fix |
+| 7 | `db/2026-09-29-user-settings.sql` | `user_settings` table: themes synced across devices |
+| 8 | `db/2026-09-30-next-week-inbox.sql` | Old "Next week" rows → next week's task list. Run **after** deploying the app that reads the column that way; re-runnable |
+| 9 | `db/2026-09-30-task-positions-rpc.sql` | `set_task_positions()`: a list's order saved in one request. Run **before** deploying the app that calls it |
 
 Each file is idempotent (`if not exists`, safe to re-run).
+
+For a fresh project, run `db/schema.sql` instead: it is the full current schema. Update it together with every new migration.
 
 ### RLS assumptions
 
@@ -41,7 +57,7 @@ Each file is idempotent (`if not exists`, safe to re-run).
 
 ### After migrations
 
-- New users get a default workspace (`main`) on first sign-in; existing tasks are backfilled to it.
+- New users get a protected default workspace (`main`, `workspaces.is_default`) on first sign-in.
 - Task order is stored in `position` and synced after drag-and-drop.
 
 ## Deploying
