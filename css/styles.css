@@ -521,7 +521,9 @@ h1 {
   top: 0;
   left: 0;
   bottom: 0;
-  width: min(18em, 80vw);
+  /* Fits the longest week label ("24 september — 30 september") plus its
+     "last week" tag on one line. */
+  width: min(21.5em, 85vw);
   background: var(--color-background);
   border-right: 0.07em solid var(--color-border);
   z-index: 100;
@@ -992,6 +994,9 @@ h1 {
 .weeks-list-dates {
   min-width: 0;
   flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .weeks-list-tag {
