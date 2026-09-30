@@ -503,10 +503,15 @@
     await setColor(row(day("Monday"), "09:30 call bob"), 5);
     await blur();
     const target = new URLSearchParams(location.search).get("focus") || "general";
+    if (target === "main") {
+      await click(row(general(), "Plan the week").querySelector(".task-star"));
+      await sleep(400);
+    }
     const r = {
       general: () => row(general(), "Book tickets"),
       day: () => row(day("Monday"), "09:30 call bob"),
       done: () => row(general(), "Reply to Anna"),
+      main: () => row(mainThing(), "Plan the week"),
     }[target]();
     await focus(r);
     r.scrollIntoView({ block: "center" });

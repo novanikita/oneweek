@@ -946,6 +946,7 @@ function createTaskPanel(cfg) {
     commitBtn.type = "button";
     commitBtn.className = "task-commit";
     commitBtn.setAttribute("aria-label", "Done");
+    commitBtn.title = "Done";
 
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
@@ -964,7 +965,7 @@ function createTaskPanel(cfg) {
 
     const actions = document.createElement("div");
     actions.className = "task-row-actions";
-    actions.append(commitBtn, deleteBtn, colorBtn, indentBtn, starBtn, dragHandle);
+    actions.append(commitBtn, colorBtn, indentBtn, starBtn, dragHandle, deleteBtn);
 
     row.append(checkbox, main);
     if (mainTaskHasSubtasks(state.tasks, i)) {

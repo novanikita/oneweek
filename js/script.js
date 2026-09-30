@@ -927,6 +927,7 @@ function createTaskDragHandle() {
   handle.setAttribute("role", "button");
   handle.setAttribute("tabindex", "-1");
   handle.setAttribute("aria-label", "Reorder task");
+  handle.title = "Drag to move";
   const icon = document.createElement("span");
   icon.className = "task-drag-handle-icon";
   icon.setAttribute("aria-hidden", "true");
@@ -962,6 +963,7 @@ function createTaskColorButton() {
   btn.type = "button";
   btn.className = "task-color";
   btn.setAttribute("aria-label", "Set task color");
+  btn.title = "Color";
   const dot = document.createElement("span");
   dot.className = "task-color-dot";
   dot.setAttribute("aria-hidden", "true");
@@ -3074,8 +3076,16 @@ window.addEventListener("load", () => {
     const scrollX = window.scrollX || 0;
     const scrollY = window.scrollY || 0;
     const rect = row.getBoundingClientRect();
-    panel.style.left = `${rect.left + scrollX}px`;
-    panel.style.width = `${rect.width}px`;
+    // Natural width (buttons stay thumb-sized even in a narrow day cell),
+    // aligned with the row but kept inside the viewport.
+    const margin = 8;
+    const viewportWidth = document.documentElement.clientWidth;
+    const left = Math.max(
+      margin,
+      Math.min(rect.left, viewportWidth - panel.offsetWidth - margin)
+    );
+    panel.style.left = `${left + scrollX}px`;
+    panel.style.width = "";
     panel.style.right = "auto";
     if (row.classList.contains("completed")) {
       const panelHeight = panel.offsetHeight;
