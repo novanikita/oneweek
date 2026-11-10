@@ -22,6 +22,21 @@ node --test tests/
 
 UI regressions: `tests/e2e/run.sh` drives the real app in headless Chromium against an in-memory fake Supabase and records DB rows plus rendered lists after each step. Run it on two revisions and diff the results — see the header of `tests/e2e/run.sh`. With `WINDOW_SIZE=390,844` the same scenarios run at phone width, where drags go through the touch (pointer-event) path; phone and desktop runs should produce identical results.
 
+## macOS app
+
+`apps/macos/` is a native SwiftUI app with Day view and Week view widgets. It signs in to the same Supabase project and needs macOS 14 or later. `OneweekKit` holds the list rules, Supabase client, offline cache and sync; the app and the widgets are thin targets on top of it.
+
+```bash
+cd apps/macos
+xcodegen generate            # project.yml -> Oneweek.xcodeproj (brew install xcodegen)
+xcodebuild -scheme Oneweek -configuration Release -derivedDataPath build build
+ditto build/Build/Products/Release/oneweek.app /Applications/oneweek.app
+
+(cd OneweekKit && swift test)
+```
+
+Signing uses the team in `project.yml` (`DEVELOPMENT_TEAM`, and the same id in the App Group). Widgets appear in the widget gallery after the app has been opened once.
+
 ## Supabase setup
 
 1. Create a Supabase project.

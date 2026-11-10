@@ -1,3 +1,12 @@
 .vercel
 
 tests/e2e/runs/
+
+apps/macos/build/
+apps/macos/Oneweek.xcodeproj/
+apps/macos/App/Info.plist
+apps/macos/App/Oneweek.entitlements
+apps/macos/Widgets/Info.plist
+apps/macos/Widgets/OneweekWidgets.entitlements
+apps/macos/OneweekKit/.build/
+apps/macos/OneweekKit/.swiftpm/

@@ -1,0 +1,74 @@
+# Generates Oneweek.xcodeproj: run `xcodegen generate` in this folder.
+name: Oneweek
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+packages:
+  OneweekKit:
+    path: OneweekKit
+settings:
+  base:
+    DEVELOPMENT_TEAM: YX7YC7XB8M
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: Apple Development
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: "YES"
+targets:
+  Oneweek:
+    type: application
+    platform: macOS
+    sources:
+      - App
+    dependencies:
+      - package: OneweekKit
+      - target: OneweekWidgets
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.nikitanova.oneweek
+        PRODUCT_NAME: oneweek
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: oneweek
+        LSApplicationCategoryType: public.app-category.productivity
+        NSHumanReadableCopyright: ""
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: ru.nikitanova.oneweek.task-row
+            UTTypeDescription: oneweek task
+            UTTypeConformsTo: [public.data]
+    entitlements:
+      path: App/Oneweek.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.application-groups:
+          - YX7YC7XB8M.oneweek
+  OneweekWidgets:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Widgets
+    dependencies:
+      - package: OneweekKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.nikitanova.oneweek.widgets
+        PRODUCT_NAME: OneweekWidgets
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: oneweek
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Widgets/OneweekWidgets.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.application-groups:
+          - YX7YC7XB8M.oneweek
