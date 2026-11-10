@@ -69,6 +69,8 @@ struct TaskTextView: NSViewRepresentable {
         if completed { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         view.typingAttributes = attributes
         view.theme = theme
+        view.insertionPointColor = textColor
+        view.selectedTextAttributes = [.backgroundColor: textColor.withAlphaComponent(0.2)]
         // Marked text is the input method's; restyling it would end the composition.
         guard !view.hasMarkedText(), let storage = view.textStorage else { return }
         let full = NSRange(location: 0, length: storage.length)
@@ -214,7 +216,7 @@ final class RowTextView: NSTextView {
         for color in [nil] + TaskColors.palette.map(Optional.some) {
             let item = ClosureMenuItem(color == nil ? "No Color" : "") { store.setColor(id, color) }
             item.state = row.color == color ? .on : .off
-            if let color, let fill = theme?.highlight(color) { item.image = Self.swatch(NSColor(fill)) }
+            if let color, let fill = theme?.highlightHex(color) { item.image = Self.swatch(NSColor(hex: fill)) }
             colors.addItem(item)
         }
         let colorItem = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
@@ -365,4 +367,82 @@ private final class ClosureMenuItem: NSMenuItem {
     required init(coder: NSCoder) { fatalError("not used") }
 
     @objc private func fire() { run() }
+}
+
+/// The toolbar's grip: dragging it moves the row, whether or not it is being edited.
+struct DragHandle: NSViewRepresentable {
+    let rowId: UUID
+    let store: BoardStore
+    let tint: NSColor
+
+    func makeNSView(context: Context) -> DragHandleView {
+        let view = DragHandleView()
+        view.store = store
+        return view
+    }
+
+    func updateNSView(_ view: DragHandleView, context: Context) {
+        view.rowId = rowId
+        view.icon.contentTintColor = tint
+    }
+}
+
+final class DragHandleView: NSView, NSDraggingSource {
+    var rowId = UUID()
+    weak var store: BoardStore?
+    let icon = NSImageView()
+    private var hovering = false {
+        didSet { animator().alphaValue = hovering ? 1 : 0.65 }
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        alphaValue = 0.65
+        wantsLayer = true
+        icon.image = NSImage(named: "drag-handle")
+        icon.image?.isTemplate = true
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(icon)
+        NSLayoutConstraint.activate([
+            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.54),
+            icon.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.54),
+        ])
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    /// Claims the press, so the drag that follows comes here and not to the window.
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let store else { return }
+        let item = NSPasteboardItem()
+        item.setString(rowId.uuidString, forType: .oneweekRow)
+        let dragging = NSDraggingItem(pasteboardWriter: item)
+        dragging.setDraggingFrame(bounds, contents: icon.image ?? NSImage())
+        store.beginDragging(rowId)
+        beginDraggingSession(with: [dragging], event: event, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .move
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        store?.endDragging()
+    }
 }

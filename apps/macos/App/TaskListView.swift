@@ -18,7 +18,8 @@ private struct RowFramesKey: PreferenceKey {
 /// One layout pass on whole points: the pile can't trail the window while resizing.
 private struct PinnedColumn: Layout {
     let gap: CGFloat
-    private let bottomInset: CGFloat = 8
+    /// Room under the last row for its edit toolbar.
+    let bottomInset: CGFloat
 
     private func heights(_ subviews: Subviews, width: CGFloat?) -> (strut: CGFloat, open: CGFloat, done: CGFloat) {
         let proposal = ProposedViewSize(width: width, height: nil)
@@ -43,8 +44,19 @@ private struct PinnedColumn: Layout {
     }
 }
 
+/// What a move animates on: order, done state, nesting. Typing never animates.
+private struct RowsShape: Equatable {
+    let rows: [String]
+
+    init(_ tasks: [TaskItem]) {
+        rows = tasks.map { "\($0.id)\($0.checked ? 1 : 0)\($0.subtask ? 1 : 0)" }
+    }
+}
+
 struct TaskListView: View {
     @Environment(BoardStore.self) private var store
+    @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let slot: Slot
     let rows: [TaskItem]
     let region: ListRegion
@@ -52,11 +64,15 @@ struct TaskListView: View {
     @State private var rowFrames: [UUID: CGRect] = [:]
     @State private var dropLineY: CGFloat?
     @State private var dropBefore: UUID?
+    /// Week and workspace seen last: switching them swaps lists without animating rows.
+    @State private var shownContext = ""
 
     private var space: String { "\(slot.rawValue)-\(region.rawValue)" }
 
     var body: some View {
         let visible = store.visibleRows(rows)
+        let context = "\(store.weekOffset)|\(store.activeWorkspaceId ?? "")"
+        let animates = !reduceMotion && context == shownContext
         Group {
             if region == .mainThing {
                 rowStack(visible)
@@ -66,6 +82,7 @@ struct TaskListView: View {
                 scrollingList(visible)
             }
         }
+        .animation(animates ? .snappy(duration: 0.26) : nil, value: RowsShape(visible))
         .coordinateSpace(.named(space))
         .overlay(alignment: .topLeading) { dropLine }
         .onPreferenceChange(RowFramesKey.self) { rowFrames = $0 }
@@ -82,27 +99,34 @@ struct TaskListView: View {
                 dropBefore = nil
             }
         }
+        .onChange(of: context, initial: true) { _, new in shownContext = new }
     }
 
     private func scrollingList(_ visible: [TaskItem]) -> some View {
         let firstDone = visible.firstIndex { $0.checked && !$0.subtask }
+        let open = firstDone.map { Array(visible[..<$0]) } ?? visible
+        let done = firstDone.map { Array(visible[$0...]) } ?? []
+        let active = store.activeRowId
         return ScrollView(.vertical) {
-            PinnedColumn(gap: firstDone == nil ? 0 : 12) {
+            PinnedColumn(gap: done.isEmpty ? 0 : 12, bottomInset: done.isEmpty ? 44 : 8) {
                 Color.clear.frame(width: 0).containerRelativeFrame(.vertical)
-                rowStack(firstDone.map { Array(visible[..<$0]) } ?? visible)
-                rowStack(firstDone.map { Array(visible[$0...]) } ?? [])
+                rowStack(open).zIndex(open.contains { $0.id == active } ? 1 : 0)
+                rowStack(done).zIndex(done.contains { $0.id == active } ? 1 : 0)
             }
             .padding(.horizontal, 6)
             .background {
                 Color.clear.contentShape(Rectangle()).onTapGesture(perform: tappedEmptySpace)
             }
         }
+        .scrollIndicators(.never)
     }
 
     private func rowStack(_ rows: [TaskItem]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(rows) { task in
                 TaskRowView(task: task)
+                    .zIndex(task.id == store.activeRowId ? 1 : 0)
+                    .transition(.opacity)
                     .background(GeometryReader { proxy in
                         Color.clear.preference(key: RowFramesKey.self, value: [task.id: proxy.frame(in: .named(space))])
                     })
@@ -114,7 +138,7 @@ struct TaskListView: View {
     private var dropLine: some View {
         if let dropLineY, store.draggingRowId != nil {
             RoundedRectangle(cornerRadius: 1)
-                .fill(Color.accentColor)
+                .fill(theme.textColor.opacity(0.7))
                 .frame(height: 2)
                 .padding(.horizontal, 8)
                 .offset(y: dropLineY - 1)

@@ -83,18 +83,6 @@ private enum WidgetType {
     static func semibold(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold) }
 }
 
-private struct WidgetBackground: View {
-    let theme: ThemeColors
-
-    var body: some View {
-        if theme.followsSystem {
-            Rectangle().fill(.background)
-        } else {
-            theme.backgroundColor
-        }
-    }
-}
-
 private struct WidgetLabel: View {
     let text: String
     let emphasized: Bool
@@ -196,7 +184,7 @@ struct DayWidgetView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .foregroundStyle(theme.textColor)
-        .containerBackground(for: .widget) { WidgetBackground(theme: theme) }
+        .containerBackground(for: .widget) { theme.backgroundColor }
     }
 }
 
@@ -252,7 +240,7 @@ struct WeekWidgetView: View {
             }
         }
         .foregroundStyle(theme.textColor)
-        .containerBackground(for: .widget) { WidgetBackground(theme: theme) }
+        .containerBackground(for: .widget) { theme.backgroundColor }
     }
 
     private func column(_ cell: Cell, theme: ThemeColors) -> some View {

@@ -8,21 +8,23 @@ import WidgetKit
 struct OneweekApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = AppSetup.makeStore()
-
-    init() {
-    }
+    @State private var ui = UIState()
 
     var body: some Scene {
         Window("oneweek", id: "main") {
             RootView()
                 .environment(store)
+                .environment(ui)
                 .frame(minWidth: 1000, minHeight: 620)
                 .onAppear { appDelegate.store = store }
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1440, height: 900)
-        .windowToolbarStyle(.unified)
         .commands {
-            SidebarCommands()
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { ui.sidebarOpen.toggle() }
+                    .keyboardShortcut(",")
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Task") {
                     store.beginNewTask(in: Slot.days.first(where: store.isToday) ?? .general)
@@ -42,10 +44,6 @@ struct OneweekApp: App {
                 Button("This Week") { Task { await store.setWeekOffset(0) } }
                     .keyboardShortcut("t")
             }
-        }
-
-        Settings {
-            SettingsView().environment(store)
         }
     }
 
@@ -76,6 +74,13 @@ struct OneweekApp: App {
             store.undoDelete()
         }
     }
+}
+
+/// Window state that the menu bar shares with the views.
+@MainActor
+@Observable
+final class UIState {
+    var sidebarOpen = false
 }
 
 /// Quitting waits for the last edits to be saved, but never for long: they are on disk first.
@@ -124,10 +129,12 @@ extension NSPasteboard.PasteboardType {
     static let oneweekRow = NSPasteboard.PasteboardType(UTType.oneweekRow.identifier)
 }
 
-/// The system font at the Mac's standard text size.
+/// The system font, sized like the site (1em there is 16px).
 enum Typeface {
-    static let bodySize: CGFloat = 13
+    static let bodySize: CGFloat = 15
     static let body = NSFont.systemFont(ofSize: bodySize)
+    /// One line of task text.
+    static let lineHeight = NSLayoutManager().defaultLineHeight(for: body)
 
     static func regular(_ size: CGFloat) -> Font { .system(size: size) }
     static func semibold(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold) }
@@ -145,10 +152,13 @@ extension EnvironmentValues {
 }
 
 extension ThemeColors {
-    var hairline: Color { followsSystem ? Color(nsColor: .separatorColor) : textColor.opacity(0.2) }
+    /// The site's `--color-border`: text at 20%.
+    var hairline: Color { textColor.opacity(0.2) }
+}
 
-    /// Plain rows use the dynamic label color, so they follow the system by themselves.
-    func nsRowText(highlighted: Bool) -> NSColor {
-        followsSystem && !highlighted ? .labelColor : NSColor(rowTextColor(highlighted: highlighted))
+extension Animation {
+    /// Movement that respects "Reduce motion".
+    static func calm(_ base: Animation, reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : base
     }
 }

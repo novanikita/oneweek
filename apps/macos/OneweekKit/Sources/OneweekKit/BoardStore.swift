@@ -6,6 +6,11 @@ import Observation
 /// Local state is the truth for the screen. Edits apply at once and are saved
 /// in the background; offline they wait on disk. A list being edited is never
 /// replaced from the server: its re-read waits until the user leaves the row.
+/// A quiet hint (undo) or a notice, styled as on the web.
+public enum ToastKind: Sendable {
+    case hint, notice
+}
+
 @MainActor
 @Observable
 public final class BoardStore {
@@ -40,6 +45,7 @@ public final class BoardStore {
     public private(set) var isOffline = false
     public private(set) var canMoveRemaining = false
     public private(set) var toast: String?
+    public private(set) var toastKind = ToastKind.notice
     public private(set) var today: Date
     public private(set) var focusRequest: FocusRequest?
     public private(set) var themeSelected: String?
@@ -74,6 +80,9 @@ public final class BoardStore {
     @ObservationIgnored private var toastTimer: Task<Void, Never>?
     @ObservationIgnored private var midnightTask: Task<Void, Never>?
     @ObservationIgnored private var widgetTimer: Task<Void, Never>?
+    /// What each list file last held, so unchanged lists aren't written again.
+    @ObservationIgnored private var lastWritten: [String: [TaskItem]] = [:]
+    @ObservationIgnored private var lastSnapshot: WidgetSnapshot?
 
     public init(
         backend: Backend,
@@ -229,6 +238,8 @@ public final class BoardStore {
         canMoveRemaining = false
         weekOffset = 0
         phase = .signedOut
+        lastWritten = [:]
+        lastSnapshot = nil
         local.writeSnapshot(nil)
         onSnapshotWritten?()
     }
@@ -449,6 +460,7 @@ public final class BoardStore {
     public func appWillResignActive() async {
         writeCacheNow()
         await flushNow()
+        local.finishWrites()
     }
 
     private func scheduleMidnight() {
@@ -655,7 +667,7 @@ public final class BoardStore {
         guard row.dbId != nil else { return }
         pushUndo(rows: [row], slot: slot, position: position)
         queueDeletes([row])
-        showToast("Deleted. Press ⌘Z to undo.")
+        showToast("Deleted. Press ⌘Z to undo.", kind: .hint)
     }
 
     private func pushUndo(rows: [TaskItem], slot: Slot, position: Int) {
@@ -677,7 +689,7 @@ public final class BoardStore {
         let removed = Array(list[span.start..<span.end])
         if removed.contains(where: { $0.dbId != nil || !TaskList.isEmptyText($0.text) }) {
             pushUndo(rows: removed, slot: at.slot, position: span.start)
-            showToast("Deleted. Press ⌘Z to undo.")
+            showToast("Deleted. Press ⌘Z to undo.", kind: .hint)
         }
         list.removeSubrange(span.start..<span.end)
         lists[at.slot] = TaskList.settle(list, in: at.slot)
@@ -1161,7 +1173,11 @@ public final class BoardStore {
         guard let userId, let workspaceId = activeWorkspaceId else { return }
         for slot in Slot.allCases {
             guard let list = lists[slot] else { continue }
-            local.writeList(list, userId: userId, workspaceId: workspaceId, address: address(of: slot))
+            let address = address(of: slot)
+            let key = "\(userId)/\(workspaceId)/\(address.cacheFileName)"
+            guard lastWritten[key] != list else { continue }
+            lastWritten[key] = list
+            local.writeList(list, userId: userId, workspaceId: workspaceId, address: address)
         }
         publishSnapshot()
     }
@@ -1170,7 +1186,8 @@ public final class BoardStore {
     private func publishSnapshot() {
         guard weekOffset == 0, activeWorkspaceId != nil else { return }
         let snapshot = WidgetSnapshot.build(lists: lists, now: today, themeSelected: themeSelected, customThemes: customThemes)
-        guard snapshot != local.readSnapshot() else { return }
+        guard snapshot != (lastSnapshot ?? local.readSnapshot()) else { return }
+        lastSnapshot = snapshot
         local.writeSnapshot(snapshot)
         scheduleWidgetReload()
     }
@@ -1187,8 +1204,9 @@ public final class BoardStore {
 
     // MARK: Toast
 
-    private func showToast(_ message: String) {
+    private func showToast(_ message: String, kind: ToastKind = .notice) {
         toast = message
+        toastKind = kind
         toastTimer?.cancel()
         toastTimer = Task { [weak self] in
             try? await Task.sleep(for: .seconds(3.2))

@@ -25,10 +25,14 @@ public struct DeviceState: Codable, Hashable, Sendable {
 }
 
 /// Offline copies of the lists: the screen is painted from here, then from the server.
+///
+/// Files are written on a serial queue, off the main thread, so saving never
+/// stalls typing; reads go through the same queue and always see the last write.
 public final class LocalStore: @unchecked Sendable {
     private let root: URL
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let io = DispatchQueue(label: "oneweek.local-store")
 
     public init(root: URL) {
         self.root = root
@@ -39,14 +43,25 @@ public final class LocalStore: @unchecked Sendable {
     }
 
     private func read<T: Decodable>(_ type: T.Type, at url: URL) -> T? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = io.sync(execute: { try? Data(contentsOf: url) }) else { return nil }
         return try? decoder.decode(type, from: data)
     }
 
     private func write<T: Encodable>(_ value: T, at url: URL) {
         guard let data = try? encoder.encode(value) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: url, options: [.atomic])
+        io.async {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url, options: [.atomic])
+        }
+    }
+
+    private func remove(_ url: URL) {
+        io.async { try? FileManager.default.removeItem(at: url) }
+    }
+
+    /// Returns once every queued write is on disk (before quitting).
+    public func finishWrites() {
+        io.sync {}
     }
 
     private func listURL(userId: String, workspaceId: String, address: ListAddress) -> URL {
@@ -78,7 +93,7 @@ public final class LocalStore: @unchecked Sendable {
     }
 
     public func wipe(userId: String) {
-        try? FileManager.default.removeItem(at: userDir(userId))
+        remove(userDir(userId))
     }
 
     public func hasUnsyncedEdits(userId: String) -> Bool {
@@ -89,6 +104,7 @@ public final class LocalStore: @unchecked Sendable {
     }
 
     private func listFiles(userId: String) -> [URL] {
+        finishWrites()
         guard let walker = FileManager.default.enumerator(at: userDir(userId), includingPropertiesForKeys: nil) else { return [] }
         return walker.compactMap { $0 as? URL }.filter {
             $0.pathExtension == "json" && !["workspaces.json", "pending-deletes.json"].contains($0.lastPathComponent)
@@ -101,7 +117,7 @@ public final class LocalStore: @unchecked Sendable {
             let name = url.deletingPathExtension().lastPathComponent
             guard name.count >= 10, String(name.suffix(10)) < cutoffIso else { continue }
             if (read([TaskItem].self, at: url) ?? []).contains(where: \.dirty) { continue }
-            try? FileManager.default.removeItem(at: url)
+            remove(url)
         }
     }
 
@@ -119,7 +135,7 @@ public final class LocalStore: @unchecked Sendable {
 
     public func writeSnapshot(_ snapshot: WidgetSnapshot?) {
         let url = root.appendingPathComponent("widget-snapshot.json")
-        if let snapshot { write(snapshot, at: url) } else { try? FileManager.default.removeItem(at: url) }
+        if let snapshot { write(snapshot, at: url) } else { remove(url) }
     }
 
     public func readPendingToggles() -> [String: Bool] {

@@ -4,31 +4,41 @@ import SwiftUI
 public struct ThemeColors: Hashable, Sendable {
     public var text: String
     public var background: String
-    /// "Match device": real system colors. The hex values only pick the highlight set.
-    public var followsSystem: Bool
 
-    public init(text: String, background: String, followsSystem: Bool = false) {
+    public init(text: String, background: String) {
         self.text = text
         self.background = background
-        self.followsSystem = followsSystem
     }
 
-    public var textColor: Color { followsSystem ? .primary : Color(hex: text) }
-    public var backgroundColor: Color { followsSystem ? Color(nsColor: .textBackgroundColor) : Color(hex: background) }
+    public var textColor: Color { Color(hex: text) }
+    public var backgroundColor: Color { Color(hex: background) }
+    public var nsTextColor: NSColor { NSColor(hex: text) }
 
     /// Dark backgrounds get the muted night versions of the task highlights.
     public var usesDarkHighlights: Bool { Self.luminance(background) < 0.45 }
 
     /// The row color for a stored (always light) palette value.
     public func highlight(_ color: String?) -> Color? {
+        highlightHex(color).map(Color.init(hex:))
+    }
+
+    public func highlightHex(_ color: String?) -> String? {
         guard let color = TaskColors.normalize(color) else { return nil }
-        return Color(hex: usesDarkHighlights ? (Self.nightHighlights[color] ?? color) : color)
+        return usesDarkHighlights ? (Self.nightHighlights[color] ?? color) : color
     }
 
     /// Text on a colored row is fixed so it reads on every highlight.
     public func rowTextColor(highlighted: Bool) -> Color {
-        guard highlighted else { return textColor }
-        return Color(hex: usesDarkHighlights ? "#f0f2f4" : "#1a1a1a")
+        Color(hex: rowTextHex(highlighted: highlighted))
+    }
+
+    public func nsRowTextColor(highlighted: Bool) -> NSColor {
+        NSColor(hex: rowTextHex(highlighted: highlighted))
+    }
+
+    private func rowTextHex(highlighted: Bool) -> String {
+        guard highlighted else { return text }
+        return usesDarkHighlights ? "#f0f2f4" : "#1a1a1a"
     }
 
     /// Checkbox fill on a colored row.
@@ -97,9 +107,7 @@ public enum Themes {
             return ThemeColors(text: theme.text, background: theme.bg)
         }
         if let preset = presets.first(where: { $0.id == key }) { return preset.colors }
-        var system = presets[systemIsDark ? 1 : 0].colors
-        system.followsSystem = true
-        return system
+        return presets[systemIsDark ? 1 : 0].colors
     }
 }
 
@@ -113,5 +121,12 @@ public extension Color {
     init(hex: String) {
         let (r, g, b) = Color.rgb(hex: hex)
         self.init(.sRGB, red: r, green: g, blue: b, opacity: 1)
+    }
+}
+
+public extension NSColor {
+    convenience init(hex: String) {
+        let (r, g, b) = Color.rgb(hex: hex)
+        self.init(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 }
