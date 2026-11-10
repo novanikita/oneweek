@@ -2410,13 +2410,15 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 }
 
 /* ---------------------------------------------------------------------------
-   Task edit toolbar — under the row being edited: done, color, subtask, main
+   Task edit toolbar — on phones docked above the keyboard (see the end of this
+   section), elsewhere under the row being edited: done, color, subtask, main
    thing, drag, and (set apart) delete. As wide as its buttons, never wider
    than the row; plain icon buttons that pick up the theme text color, also
    on colored rows. Visibility rules live with `.task-row` above.
    ------------------------------------------------------------------------ */
 .task-row-actions {
   --toolbar-btn: 1.85em;
+  --toolbar-icon: 54%;
   display: none;
   position: absolute;
   top: calc(100% + 0.3em);
@@ -2447,10 +2449,11 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 .task-row-actions > button,
 .task-row-actions > .task-drag-handle {
   position: relative;
+  /* Equal squares: the width may shrink to fit a narrow day, the height follows. */
   flex: 0 1 var(--toolbar-btn);
   width: var(--toolbar-btn);
   min-width: 1.35em;
-  height: var(--toolbar-btn);
+  aspect-ratio: 1;
   margin: 0;
   padding: 0;
   display: inline-flex;
@@ -2504,6 +2507,19 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
   background: color-mix(in srgb, #c62828 10%, transparent);
 }
 
+/* Every icon fills the same square, a fixed share of its button. */
+.task-row-actions .task-commit::after,
+.task-row-actions .task-delete::after,
+.task-row-actions .task-indent::after,
+.task-row-actions .task-star::after,
+.task-drag-handle-icon,
+.task-color-dot {
+  display: block;
+  flex: none;
+  width: var(--toolbar-icon);
+  aspect-ratio: 1;
+}
+
 /* Icons are masks painted with the button's current color. */
 .task-row-actions .task-commit::after,
 .task-row-actions .task-delete::after,
@@ -2511,35 +2527,26 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 .task-row-actions .task-star::after,
 .task-drag-handle-icon {
   content: "";
-  display: block;
   background-color: currentColor;
   pointer-events: none;
 }
 
 .task-row-actions .task-commit::after {
-  width: 0.85em;
-  height: 0.85em;
   -webkit-mask: url("../check-mark.svg") center / contain no-repeat;
   mask: url("../check-mark.svg") center / contain no-repeat;
 }
 
 .task-row-actions .task-delete::after {
-  width: 0.9em;
-  height: 0.9em;
   -webkit-mask: url("../trash.svg") center / contain no-repeat;
   mask: url("../trash.svg") center / contain no-repeat;
 }
 
 .task-row-actions .task-indent::after {
-  width: 0.9em;
-  height: 0.9em;
-  -webkit-mask: url("../subtask.svg") center / contain no-repeat;
-  mask: url("../subtask.svg") center / contain no-repeat;
+  -webkit-mask: url("../subtask.svg?v=2") center / contain no-repeat;
+  mask: url("../subtask.svg?v=2") center / contain no-repeat;
 }
 
 .task-row-actions .task-star::after {
-  width: 1.05em;
-  height: 1.05em;
   -webkit-mask: url("../star.svg?v=2") center / contain no-repeat;
   mask: url("../star.svg?v=2") center / contain no-repeat;
 }
@@ -2552,7 +2559,7 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 .task-row-actions .task-star.is-on::before {
   content: "";
   position: absolute;
-  width: 1.15em;
+  width: 68%;
   height: 0.09em;
   background: currentColor;
   border-radius: 999em;
@@ -2561,9 +2568,6 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 }
 
 .task-color-dot {
-  display: block;
-  width: 0.85em;
-  height: 0.85em;
   box-sizing: border-box;
   border-radius: 50%;
   border: 0.09em solid currentColor;
@@ -2587,55 +2591,41 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 }
 
 .task-drag-handle-icon {
-  width: 0.6em;
-  height: 0.9em;
-  -webkit-mask: url("../drag-handle.svg") center / contain no-repeat;
-  mask: url("../drag-handle.svg") center / contain no-repeat;
+  -webkit-mask: url("../drag-handle.svg?v=2") center / contain no-repeat;
+  mask: url("../drag-handle.svg?v=2") center / contain no-repeat;
 }
 
 @media (max-width: 900px) {
-  /* Thumb-sized buttons. Portaled to <body> by JS, which places the strip
-     under the row and keeps it inside the viewport. */
   .task-row-actions {
-    --toolbar-btn: 2.6em;
-    gap: 0.2em;
-    padding: 0.3em;
-    border-radius: 0.8em;
-    max-width: none;
-    z-index: 1;
+    --toolbar-btn: 2.75em;
   }
 
+  /* Docked in one line above the keyboard, like the bar in Notes or Notion.
+     Portaled to <body> by JS, which sets `top` from the visual viewport. */
   .task-row-actions.is-mobile-portaled {
+    position: fixed;
+    left: 0;
+    right: 0;
     display: flex;
+    justify-content: space-between;
+    width: auto;
+    max-width: none;
+    gap: 0.2em;
+    padding: 0.2em max(0.6em, env(safe-area-inset-right))
+      calc(0.2em + env(safe-area-inset-bottom)) max(0.6em, env(safe-area-inset-left));
+    border-width: 0.07em 0 0;
+    border-radius: 0;
     pointer-events: auto;
     z-index: 1000;
-    top: auto;
-    bottom: auto;
   }
 
-  .task-row.completed .task-row-actions.is-mobile-portaled {
-    bottom: auto;
+  /* The keyboard already covers the home-indicator area. */
+  .task-row-actions.is-mobile-portaled.is-above-keyboard {
+    padding-bottom: 0.2em;
   }
 
-  .task-row-actions .task-commit::after,
-  .task-row-actions .task-delete::after,
-  .task-row-actions .task-indent::after {
-    width: 1.05em;
-    height: 1.05em;
-  }
-
-  .task-row-actions .task-star::after {
-    width: 1.25em;
-    height: 1.25em;
-  }
-
-  .task-color-dot {
-    width: 1em;
-    height: 1em;
-  }
-
-  .task-drag-handle-icon {
-    width: 0.75em;
-    height: 1.1em;
+  /* Room to scroll the last task clear of the bar. */
+  body:has(> .task-row-actions.is-mobile-portaled) {
+    padding-bottom: var(--mobile-toolbar-room, 3.5em);
   }
 }

@@ -134,6 +134,10 @@ function createTaskPanel(cfg) {
   let loadGen = 0;
   /** Workspace the visible tasks belong to; guards cache writes. */
   let tasksWorkspaceId = null;
+  /** Bumps on every keystroke, so a response requested earlier can't overwrite it. */
+  let editGen = 0;
+  /** A re-read was skipped because the user was editing; runs when they leave. */
+  let reloadWhenIdle = false;
   /** Empty-area click right after editing: save only, do not open a new draft row. */
   let suppressEmptyClickNewTask = false;
   const dropIndicator = createTaskDropIndicator(anchorEl, indicatorScrollEl);
@@ -173,6 +177,23 @@ function createTaskPanel(cfg) {
       ...relocateFieldsForAddress(getAddress()),
       workspace_id: getActiveWorkspaceId(),
     });
+  }
+
+  /** Row id of the task field that has focus in this panel, if any. */
+  function focusedTaskId() {
+    const active = document.activeElement;
+    if (!active?.classList?.contains("task-text") || !containerEl.contains(active)) return null;
+    return active.closest(".task-row")?.dataset?.id ?? null;
+  }
+
+  /** Mid-action in this panel: rebuilding the rows now would pull them away. */
+  function isUserEditing() {
+    return (
+      !!focusedTaskId() ||
+      state.isDragging ||
+      taskDragInteractionActive ||
+      !!containerEl.querySelector(".task-row-color-open")
+    );
   }
 
   // --- Persistence -------------------------------------------------------
@@ -322,27 +343,55 @@ function createTaskPanel(cfg) {
     return true;
   }
 
-  async function load() {
-    if (!supabase || !isAuthed || !userId) return;
-    const gen = ++loadGen;
-    const address = getAddress();
-    tasksWorkspaceId = null;
+  /** Run the re-read that was held back, once the user has left the field. */
+  async function runDeferredReload() {
+    if (!reloadWhenIdle || isUserEditing()) return;
+    // Saves first, so the re-read can't bring back the text just replaced.
+    await flushDirtyTasks();
+    await load({ background: true });
+  }
 
-    // Fail closed: an unfiltered query would mix every workspace into one list.
-    const workspaceId = getActiveWorkspaceId();
-    if (!workspaceId) {
-      state.tasks = [];
-      render();
+  /**
+   * Read the list from the server. A `background` re-read (network retry,
+   * coming back to the app) refreshes what is already on screen, so it never
+   * repaints from the cache and waits while the user is editing this panel.
+   */
+  async function load({ background = false } = {}) {
+    if (!supabase || !isAuthed || !userId) return;
+    if (background && isUserEditing()) {
+      reloadWhenIdle = true;
       return;
     }
+    reloadWhenIdle = false;
+    const gen = ++loadGen;
+    const editsAtRequest = editGen;
+    const address = getAddress();
+    const workspaceId = getActiveWorkspaceId();
+    let listOnScreen = true;
 
-    // Paint the cache first so a flaky network can't hide the user's data;
-    // with no cache, clear so another week's tasks never show meanwhile.
-    if (!applyCachedTasks(workspaceId)) state.tasks = [];
-    // The list belongs to this workspace now: cache writes work even if the
-    // server never answers (offline edits survive a reload).
-    tasksWorkspaceId = workspaceId;
-    render();
+    if (background) {
+      if (!workspaceId) return;
+    } else {
+      tasksWorkspaceId = null;
+
+      // Fail closed: an unfiltered query would mix every workspace into one list.
+      if (!workspaceId) {
+        state.tasks = [];
+        render();
+        return;
+      }
+
+      // Paint the cache first so a flaky network can't hide the user's data;
+      // with no cache, clear so another week's tasks never show meanwhile.
+      if (!applyCachedTasks(workspaceId)) {
+        state.tasks = [];
+        listOnScreen = false;
+      }
+      // The list belongs to this workspace now: cache writes work even if the
+      // server never answers (offline edits survive a reload).
+      tasksWorkspaceId = workspaceId;
+      render();
+    }
 
     let query = supabase
       .from("tasks")
@@ -368,6 +417,15 @@ function createTaskPanel(cfg) {
     if (!sameListAddress(address, getAddress())) return;
     if (getActiveWorkspaceId() !== workspaceId) return;
 
+    // The user started typing while this was in flight: the answer may predate
+    // those keystrokes and applying it would rebuild the row under the caret.
+    // Only a list with nothing on screen yet is worth interrupting for.
+    if (listOnScreen && (isUserEditing() || editGen !== editsAtRequest)) {
+      reloadWhenIdle = true;
+      void runDeferredReload();
+      return;
+    }
+
     const serverTasks = (data ?? []).map((row) =>
       taskFromRow({
         dbId: row.id,
@@ -379,9 +437,12 @@ function createTaskPanel(cfg) {
         isMain: row.is_main,
       })
     );
+    const focusedTask = state.tasks[getTaskIndex(focusedTaskId())];
     state.tasks = mergeLocalEditsIntoServerSnapshot(serverTasks, state.tasks, {
       contentKeyFn: mergeContentKey,
     });
+    // The merge skips blank drafts; keep the one the user is sitting in.
+    if (focusedTask && getTaskIndex(focusedTask.id) === -1) state.tasks.push(focusedTask);
     normalizeAndSettle();
     syncPositionsFromArray(state.tasks);
     tasksWorkspaceId = workspaceId;
@@ -585,7 +646,8 @@ function createTaskPanel(cfg) {
     const input = findRow(taskId)?.querySelector(".task-text");
     if (!input) return { needRender: true };
     const text = normalizeText(input.value);
-    if (text !== input.value) input.value = text;
+    // Only on commit: a flush must not move the caret of a field still in use.
+    if (commit && text !== input.value) input.value = text;
     const task = state.tasks[idx];
     task.text = text;
     persistSubtaskNormalizationFixes(normalizeSubtaskFlags(state.tasks), normalizeCtx());
@@ -607,21 +669,24 @@ function createTaskPanel(cfg) {
 
   async function commitTask(taskId) {
     const { needRender, removed } = await syncTaskFromInput(taskId, { commit: true });
-    if (removed) return false;
+    if (removed) {
+      void runDeferredReload();
+      return false;
+    }
     state.tasks = settle(state.tasks);
     schedulePersistTaskPositions();
 
-    // Enter creates + focuses the next row, then the previous field's deferred
-    // blur commit lands ~50ms later. Re-rendering then would steal focus from
-    // the new draft (whose own blur would drop it as unused), so skip it.
-    const ae = document.activeElement;
-    const otherTaskFocused =
-      ae?.classList?.contains("task-text") &&
-      containerEl.contains(ae) &&
-      ae.closest(".task-row")?.dataset?.id !== taskId;
-    if (otherTaskFocused && !needRender) return true;
+    // The user already moved to another row (Enter, a click) and this deferred
+    // commit landed ~50ms later: they are typing there, so don't rebuild the
+    // list. A dropped draft just leaves in place.
+    const focusedId = focusedTaskId();
+    if (focusedId && focusedId !== taskId) {
+      if (needRender) findRow(taskId)?.remove();
+      return !needRender;
+    }
 
-    render();
+    render({ keepFocus: false });
+    void runDeferredReload();
     return !needRender;
   }
 
@@ -1151,7 +1216,9 @@ function createTaskPanel(cfg) {
         return;
       }
       scheduleTaskBlurCommit(
-        () => commitTask(taskId),
+        // Switching to another app or tab blurs the field without leaving it:
+        // the caret is still here when the user returns. Save and stay.
+        () => (focusedTaskId() === taskId ? flushFocusedInput() : commitTask(taskId)),
         () => state.isDragging || taskDragInteractionActive
       );
     });
@@ -1159,13 +1226,24 @@ function createTaskPanel(cfg) {
     return row;
   }
 
-  function render() {
+  function render({ keepFocus = true } = {}) {
     if (!isAuthed) {
       listRoots.forEach(clearTaskListContainer);
       return;
     }
     // Keep the on-disk cache in sync with the live view.
     writeCache();
+
+    // Every render replaces the rows. Unless this one moves focus on purpose,
+    // the field being edited comes back with its caret, in the same tick (a
+    // frame later is too late for keystrokes and for the mobile keyboard).
+    const focused = focusedTaskId();
+    const refocus =
+      state.focusAfterRender ??
+      (keepFocus && focused
+        ? { id: focused, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
+        : null);
+    state.focusAfterRender = null;
 
     const beforeRects = captureTaskRowRects(containerEl);
     listRoots.forEach(clearTaskListContainer);
@@ -1211,11 +1289,7 @@ function createTaskPanel(cfg) {
     containerEl.querySelectorAll(".task-text").forEach(autoSizeTextarea);
     playTaskRowFlip(containerEl, beforeRects);
 
-    if (state.focusAfterRender) {
-      const { id, start, end } = state.focusAfterRender;
-      state.focusAfterRender = null;
-      requestAnimationFrame(() => focusTask(id, start, end));
-    }
+    if (refocus) focusTask(refocus.id, refocus.start, refocus.end);
   }
 
   // --- Event wiring ------------------------------------------------------
@@ -1266,6 +1340,7 @@ function createTaskPanel(cfg) {
       const task = state.tasks[getTaskIndex(e.target.closest(".task-row")?.dataset.id)];
       if (!task) return;
       task.text = e.target.value;
+      editGen += 1;
       markTaskDirty(task);
       autoSizeTextarea(e.target);
     });
@@ -1412,15 +1487,13 @@ function createTaskPanel(cfg) {
   // --- Saving, reconnects, week / workspace switches ----------------------
 
   async function flushFocusedInput() {
-    const active = document.activeElement;
-    if (!active?.classList?.contains("task-text") || !containerEl.contains(active)) return;
-    const id = active.closest(".task-row")?.dataset.id;
+    const id = focusedTaskId();
     if (!id) return;
     // A never-saved empty draft has nothing to persist. Syncing it would drop
     // it from state while its row stays focused (e.g. on app switch), so text
     // typed after returning would be silently lost.
     const task = state.tasks[getTaskIndex(id)];
-    if (task && !task.dbId && isTaskEmptyText(active.value)) return;
+    if (task && !task.dbId && isTaskEmptyText(document.activeElement.value)) return;
     await syncTaskFromInput(id);
   }
 
@@ -1445,7 +1518,7 @@ function createTaskPanel(cfg) {
   onNetworkRetry(async () => {
     if (!isAuthed) return;
     await flushDirtyTasks();
-    await load();
+    await load({ background: true });
   });
 
   // Saves were flushed before the week offset / active workspace changed.
@@ -1470,7 +1543,7 @@ function createTaskPanel(cfg) {
   return {
     blockId,
     setAuthUser,
-    reload: () => (isAuthed ? load() : undefined),
+    reload: () => (isAuthed ? load({ background: true }) : undefined),
     appendPersistedRows,
     getTaskCount: () => state.tasks.length,
   };
@@ -1752,13 +1825,12 @@ function setupMoveRemaining(generalPanel) {
   }
 
   // Coming back to the app: re-read so edits from other devices show up.
-  // Skipped while a task field is being edited (a re-render would drop it).
+  // A panel being edited holds its re-read until the user leaves the field.
   const REFRESH_MIN_INTERVAL_MS = 15000;
   let lastRefreshAt = Date.now();
   function refreshOnReturn() {
     if (document.visibilityState !== "visible") return;
     if (Date.now() - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return;
-    if (document.activeElement?.classList?.contains("task-text")) return;
     if (window.__dragTaskPayload) return;
     lastRefreshAt = Date.now();
     for (const panel of panels) void panel.reload();

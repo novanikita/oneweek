@@ -383,6 +383,12 @@ document.addEventListener(
   true
 );
 
+/** Bottom edge of the visible page, above an on-screen keyboard if there is one. */
+function getVisibleViewportBottom() {
+  const vv = window.visualViewport;
+  return vv ? vv.offsetTop + vv.height : window.innerHeight;
+}
+
 function closeTaskColorPicker(restoreFocus = false) {
   if (!activeColorPicker) return;
   const { el, onOutside, onKey, onScroll, restoreFocusInput, rowEl } = activeColorPicker;
@@ -475,14 +481,15 @@ function openTaskColorPicker(anchor, currentColor, onSelect, restoreFocusInput, 
     const popRect = pop.getBoundingClientRect();
     const margin = 8;
     let top = rect.bottom + 6;
-    const centerEl = rowEl || anchor;
+    // In the docked mobile bar the row can be anywhere: stay by the button.
+    const centerEl = anchor.closest(".is-mobile-portaled") ? anchor : rowEl || anchor;
     const centerRect = centerEl.getBoundingClientRect();
     let left = centerRect.left + centerRect.width / 2 - popRect.width / 2;
     if (left < margin) left = margin;
     if (left + popRect.width > window.innerWidth - margin) {
       left = window.innerWidth - popRect.width - margin;
     }
-    if (top + popRect.height > window.innerHeight - margin) {
+    if (top + popRect.height > getVisibleViewportBottom() - margin) {
       top = Math.max(margin, rect.top - popRect.height - 6);
     }
     pop.style.top = `${top}px`;
@@ -528,7 +535,9 @@ function openTaskColorPicker(anchor, currentColor, onSelect, restoreFocusInput, 
 
   activeColorPicker = { el: pop, onOutside, onKey, onScroll, restoreFocusInput, rowEl };
 
-  requestAnimationFrame(() => focusSwatch(0));
+  // Keyboard users start on a swatch. In the docked mobile bar focus stays in
+  // the text field, or the on-screen keyboard would close.
+  if (!anchor.closest(".is-mobile-portaled")) requestAnimationFrame(() => focusSwatch(0));
 }
 
 function wireTaskDragHandle(dragHandle, row, isAuthed, onDragStart, onDragEnd, touchReorder) {
@@ -1339,9 +1348,10 @@ function createSubtaskToggle(mainTask, subtaskCount, onToggle) {
 }
 
 /**
- * Mobile-only: portal .task-row-actions to document.body and place it with
- * position:absolute in *document* coordinates (rect + scroll offset). Unlike
- * position:fixed, it scrolls with the task automatically — no scroll listener.
+ * Mobile-only: the active row's .task-row-actions is portaled to document.body
+ * and docked in one line right above the on-screen keyboard, or at the bottom
+ * of the screen when there is none. Placed from the visual viewport: that is
+ * what shrinks when a keyboard opens, the layout viewport usually doesn't.
  */
 (function setupMobileActionPanelPositioner() {
   const MOBILE_MEDIA = window.matchMedia
@@ -1360,27 +1370,24 @@ function createSubtaskToggle(mainTask, subtaskCount, onToggle) {
     ".task-row.task-row-color-open",
   ].join(", ");
 
+  /** A smaller gap below the visible area is browser chrome, not a keyboard. */
+  const KEYBOARD_MIN_HEIGHT = 120;
+  const ROW_CLEARANCE = 8;
+
   const portaledPanelByRow = new WeakMap();
   const rowByPortaledPanel = new WeakMap();
   let observedRow = null;
+  let revealedRowKey = null;
   const rowResizeObserver = new ResizeObserver(() => scheduleUpdate());
 
   function isMobile() {
     return MOBILE_MEDIA ? MOBILE_MEDIA.matches : false;
   }
 
-  function clearPanelStyles(panel) {
-    panel.style.top = "";
-    panel.style.left = "";
-    panel.style.width = "";
-    panel.style.right = "";
-    panel.style.bottom = "";
-  }
-
   function unportalPanel(panel) {
     if (!panel) return;
-    panel.classList.remove("is-mobile-portaled");
-    clearPanelStyles(panel);
+    panel.classList.remove("is-mobile-portaled", "is-above-keyboard");
+    panel.style.top = "";
     const row = rowByPortaledPanel.get(panel);
     rowByPortaledPanel.delete(panel);
     if (row) portaledPanelByRow.delete(row);
@@ -1406,28 +1413,30 @@ function createSubtaskToggle(mainTask, subtaskCount, onToggle) {
     if (panel.parentNode !== document.body) document.body.appendChild(panel);
   }
 
-  function positionPanel(panel, row) {
-    const scrollX = window.scrollX || 0;
-    const scrollY = window.scrollY || 0;
+  /** Dock the bar at the bottom of what is visible; returns its top edge. */
+  function dockPanel(panel) {
+    const visibleBottom = getVisibleViewportBottom();
+    const keyboardOpen = window.innerHeight - visibleBottom > KEYBOARD_MIN_HEIGHT;
+    panel.classList.toggle("is-above-keyboard", keyboardOpen);
+    const top = visibleBottom - panel.getBoundingClientRect().height;
+    panel.style.top = `${top}px`;
+    // The page needs this much extra room to scroll its last task clear.
+    document.body.style.setProperty("--mobile-toolbar-room", `${window.innerHeight - top}px`);
+    return top;
+  }
+
+  /**
+   * Keep the row being edited out from under the bar. Only when the row, its
+   * height or the keyboard changed, so it never fights the user's scrolling.
+   */
+  function revealRow(row, panel, barTop) {
+    if (taskDragInteractionActive) return;
     const rect = row.getBoundingClientRect();
-    // Natural width (buttons stay thumb-sized even in a narrow day cell),
-    // aligned with the row but kept inside the viewport.
-    const margin = 8;
-    const viewportWidth = document.documentElement.clientWidth;
-    const left = Math.max(
-      margin,
-      Math.min(rect.left, viewportWidth - panel.offsetWidth - margin)
-    );
-    panel.style.left = `${left + scrollX}px`;
-    panel.style.width = "";
-    panel.style.right = "auto";
-    if (row.classList.contains("completed")) {
-      const panelHeight = panel.offsetHeight;
-      panel.style.top = `${rect.top + scrollY - panelHeight - 6}px`;
-    } else {
-      panel.style.top = `${rect.bottom + scrollY + 6}px`;
-    }
-    panel.style.bottom = "auto";
+    const key = [row.dataset.id, Math.round(rect.height), panel.classList.contains("is-above-keyboard")].join("|");
+    if (key === revealedRowKey) return;
+    revealedRowKey = key;
+    const covered = rect.bottom + ROW_CLEARANCE - barTop;
+    if (covered > 0) window.scrollBy(0, covered);
   }
 
   function update() {
@@ -1448,6 +1457,7 @@ function createSubtaskToggle(mainTask, subtaskCount, onToggle) {
     if (!row) {
       rowResizeObserver.disconnect();
       observedRow = null;
+      revealedRowKey = null;
       return;
     }
 
@@ -1461,7 +1471,7 @@ function createSubtaskToggle(mainTask, subtaskCount, onToggle) {
     if (!panel) return;
 
     portalPanel(panel, row);
-    positionPanel(panel, row);
+    revealRow(row, panel, dockPanel(panel));
   }
 
   let rafId = null;
@@ -1481,6 +1491,7 @@ function createSubtaskToggle(mainTask, subtaskCount, onToggle) {
   window.addEventListener("resize", scheduleUpdate);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", scheduleUpdate);
+    window.visualViewport.addEventListener("scroll", scheduleUpdate);
   }
   if (MOBILE_MEDIA?.addEventListener) {
     MOBILE_MEDIA.addEventListener("change", scheduleUpdate);

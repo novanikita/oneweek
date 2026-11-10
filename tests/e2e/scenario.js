@@ -669,6 +669,197 @@
     };
   }
 
+  /** The row being typed in stays active through saves, reloads and retries. */
+  async function scenario9() {
+    for (let i = 0; i < 100 && !general().querySelector(".tasks-list"); i++) await sleep(50);
+    await sleep(300);
+    const edit = (el, text) => {
+      el.value = text;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const active = () => document.activeElement;
+    const alive = (el) => active() === el && el.isConnected;
+    const returnToApp = async () => {
+      await sleep(16000); // refresh-on-return is throttled to once per 15s
+      window.dispatchEvent(new Event("focus"));
+    };
+
+    await clickEmpty(general());
+    await type("A");
+    await key("Enter");
+    await type("B");
+    await key("Enter");
+    await type("C");
+    await blur();
+    await sleep(200);
+
+    log("network comes back while typing");
+    await focus(row(general(), "B"));
+    let field = active();
+    edit(field, "B typing");
+    field.setSelectionRange(3, 3);
+    window.dispatchEvent(new Event("online"));
+    await sleep(400);
+    checkpoints.networkBack = { kept: alive(field), value: field.value, caret: field.selectionStart };
+
+    log("offline: the 15s retry loop runs while typing");
+    window.__fakeOffline = true;
+    edit(field, "B typing offline");
+    await window.__flushAllTaskSaves();
+    edit(field, "B typing offline more");
+    await sleep(16000);
+    checkpoints.offlineRetry = { kept: alive(field), value: active().value };
+    window.__fakeOffline = false;
+    window.dispatchEvent(new Event("online"));
+    await sleep(400);
+    checkpoints.backOnline = { kept: alive(field), db: window.__fakeDb.tasks.map((t) => t.content).sort() };
+    await blur();
+    await sleep(300);
+
+    log("the server answers after typing started");
+    await returnToApp();
+    row(general(), "C").querySelector(".task-text").focus();
+    field = active();
+    await sleep(300);
+    checkpoints.lateResponse = { kept: alive(field) };
+
+    log("another device's task waits until the field is left");
+    const template = window.__fakeDb.tasks.find((t) => t.content === "A");
+    window.__fakeDb.tasks.push({ ...template, id: "remote-1", content: "from phone", position: 99 });
+    await returnToApp();
+    await sleep(300);
+    const shown = () => describe(general()).some((line) => line.includes("from phone"));
+    checkpoints.remoteWhileTyping = { kept: alive(field), shown: shown() };
+    await blur();
+    await sleep(400);
+    checkpoints.remoteAfterLeaving = { shown: shown() };
+
+    log("switching apps blurs the field without leaving it");
+    await focus(row(general(), "A"));
+    field = active();
+    field.dispatchEvent(new FocusEvent("blur"));
+    await sleep(200);
+    checkpoints.appSwitch = { kept: alive(field) };
+    await blur();
+
+    log("a blank draft is dropped after moving to another row");
+    await clickEmpty(general());
+    field = row(general(), "A").querySelector(".task-text");
+    field.focus();
+    await sleep(200);
+    checkpoints.draftLeft = { kept: alive(field), rows: describe(general()) };
+
+    log("ticking another row while typing");
+    field.setSelectionRange(1, 1);
+    await click(row(general(), "C").querySelector(".task-checkbox"));
+    checkpoints.tickOther = {
+      focused: active().classList.contains("task-text") ? active().value : null,
+      caret: active().selectionStart,
+    };
+    await blur();
+    await click(row(general(), "C").querySelector(".task-checkbox"));
+
+    log("a list scrolled down stays put when it re-renders");
+    if (window.innerWidth > 900) {
+      await clickEmpty(general());
+      for (let i = 0; i < 45; i++) {
+        await type(`row ${i}`);
+        await key("Enter");
+      }
+      await blur();
+      await sleep(300);
+      const scroller = general();
+      scroller.scrollTop = 400;
+      const before = scroller.scrollTop;
+      await focus(row(general(), "row 20"));
+      field = active();
+      await click(row(general(), "row 21").querySelector(".task-checkbox"));
+      checkpoints.scroll = { moved: before > 0 && scroller.scrollTop === before, focused: active().value };
+    }
+  }
+
+  /** Edit toolbar: equal square buttons and icons; on phones docked above the keyboard. */
+  async function scenario10() {
+    for (let i = 0; i < 100 && !general().querySelector(".tasks-list"); i++) await sleep(50);
+    await sleep(300);
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const size = (w, h) => `${r2(w)}x${r2(h)}`;
+    const isPhone = window.innerWidth <= 900;
+    const toolbar = (r) => (isPhone ? $("body > .task-row-actions.is-mobile-portaled") : r.querySelector(".task-row-actions"));
+    const sizes = (bar) => {
+      const buttons = [...bar.children].map((el) => {
+        const b = el.getBoundingClientRect();
+        return size(b.width, b.height);
+      });
+      const icons = [...bar.children].map((el) => {
+        const span = el.querySelector(".task-color-dot, .task-drag-handle-icon");
+        if (span) {
+          const b = span.getBoundingClientRect();
+          return size(b.width, b.height);
+        }
+        const cs = getComputedStyle(el, "::after");
+        return size(parseFloat(cs.width), parseFloat(cs.height));
+      });
+      return { buttons: [...new Set(buttons)], icons: [...new Set(icons)] };
+    };
+
+    await clickEmpty(general());
+    await type("Week row");
+    await key("Enter");
+    await type("Second week row");
+    await blur();
+    await clickEmpty(day("Friday"));
+    await type("Day row");
+    await blur();
+
+    for (const [name, r] of [["general", row(general(), "Week row")], ["day", row(day("Friday"), "Day row")]]) {
+      await focus(r);
+      await sleep(150);
+      checkpoints[name] = sizes(toolbar(r));
+      await blur();
+    }
+
+    if (isPhone) {
+      const vv = window.visualViewport;
+      // A screenshot needs no scrolling: use a row near the top of the page.
+      const shotBar = new URLSearchParams(location.search).get("shot") === "bar";
+      if (shotBar) {
+        await clickEmpty(day("Monday"));
+        await type("Call the dentist at noon");
+        await blur();
+      }
+      const r = shotBar ? row(day("Monday"), "Call the dentist at noon") : row(general(), "Second week row");
+      await focus(r);
+      await sleep(150);
+      const fullHeight = vv.height;
+      Object.defineProperty(vv, "height", { configurable: true, get: () => fullHeight - 300 });
+      vv.dispatchEvent(new Event("resize"));
+      await sleep(200);
+      const bar = toolbar(r);
+      const b = bar.getBoundingClientRect();
+      checkpoints.keyboard = {
+        position: getComputedStyle(bar).position,
+        barBottom: r2(b.bottom),
+        visibleBottom: r2(vv.offsetTop + vv.height),
+        fullWidth: b.left === 0 && r2(b.right) === document.documentElement.clientWidth,
+        oneLine: new Set([...bar.children].map((el) => r2(el.getBoundingClientRect().top))).size === 1,
+        marked: bar.classList.contains("is-above-keyboard"),
+        rowClear: r.getBoundingClientRect().bottom <= b.top,
+        focused: document.activeElement === r.querySelector(".task-text"),
+      };
+      if (shotBar) return;
+      await click(bar.querySelector(".task-color"));
+      await sleep(150);
+      const pop = $(".task-color-popover").getBoundingClientRect();
+      checkpoints.colorPicker = {
+        aboveBar: pop.bottom <= b.top,
+        keyboardStays: document.activeElement === r.querySelector(".task-text"),
+      };
+    } else {
+      await focus(row(day("Friday"), "Day row"));
+    }
+  }
+
   function finish(error) {
     const pre = document.createElement("pre");
     pre.id = "out";
@@ -684,7 +875,7 @@
   }
 
   window.addEventListener("load", () => {
-    const which = { 2: scenario2, 3: scenario3, 4: scenario4, 5: scenario5, 6: scenario6, 7: scenario7, 8: scenario8 }[new URLSearchParams(location.search).get("s")] || scenario;
+    const which = { 2: scenario2, 3: scenario3, 4: scenario4, 5: scenario5, 6: scenario6, 7: scenario7, 8: scenario8, 9: scenario9, 10: scenario10 }[new URLSearchParams(location.search).get("s")] || scenario;
     which().then(() => finish(null), (err) => finish(err));
   });
 })();

@@ -1,22 +1,22 @@
 /* oneweek app-shell service worker — caches UI assets; never caches API. */
-const CACHE = "oneweek-shell-v22";
+const CACHE = "oneweek-shell-v23";
 
 const REQUIRED_PRECACHE = [
   "./",
   "./index.html",
   "./site.webmanifest",
   "./css/colors.css?v=20260812-1",
-  "./css/styles.css?v=20260930-3",
+  "./css/styles.css?v=20261109-1",
   "./js/theme-init.js?v=20260929-1",
   "./js/vendor/supabase.js?v=2.49.8",
   "./js/workspaces.js?v=20260930-1",
   "./js/task-model.js?v=20260930-2",
   "./js/core.js?v=20260930-3",
   "./js/auth.js?v=20260930-3",
-  "./js/task-ui.js?v=20260930-3",
+  "./js/task-ui.js?v=20261109-1",
   "./js/week-nav.js?v=20260930-3",
   "./js/sidebar.js?v=20260930-3",
-  "./js/task-panel.js?v=20260930-3",
+  "./js/task-panel.js?v=20261109-1",
   "./js/workspace-tabs.js?v=20260930-1",
   "./js/theme-sync.js?v=20260929-1",
   "./icons/favicon.svg",
