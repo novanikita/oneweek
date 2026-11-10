@@ -10,3 +10,4 @@ apps/macos/Widgets/Info.plist
 apps/macos/Widgets/OneweekWidgets.entitlements
 apps/macos/OneweekKit/.build/
 apps/macos/OneweekKit/.swiftpm/
+apps/macos/dist/

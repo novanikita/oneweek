@@ -35,6 +35,8 @@ ditto build/Build/Products/Release/oneweek.app /Applications/oneweek.app
 (cd OneweekKit && swift test)
 ```
 
+To get a file to install, run `apps/macos/release.sh`: it writes `apps/macos/dist/oneweek-<version>.dmg`. Open it and drag oneweek into Applications. The app is signed for development, not notarized, so on another Mac allow it once in System Settings → Privacy & Security → Open Anyway.
+
 Signing uses the team in `project.yml` (`DEVELOPMENT_TEAM`, and the same id in the App Group). Widgets appear in the widget gallery after the app has been opened once.
 
 ## Supabase setup
