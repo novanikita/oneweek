@@ -172,7 +172,7 @@ struct RowToolbar: View {
             if colorsOpen, opensUpward { swatches }
             SquareRow {
                 ToolbarButton(help: "Done") { NSApp.keyWindow?.makeFirstResponder(nil) } icon: {
-                    Glyph(name: "check-mark")
+                    Glyph(name: "done")
                 }
                 ToolbarButton(help: "Color", lit: colorsOpen) { colorsOpen.toggle() } icon: {
                     ColorDot(color: theme.highlight(task.color))
@@ -181,11 +181,7 @@ struct RowToolbar: View {
                     Glyph(name: "subtask")
                 }
                 ToolbarButton(help: "This week's main thing", lit: task.isMain) { store.toggleMainThing(task.id) } icon: {
-                    Glyph(name: "star").overlay {
-                        if task.isMain {
-                            Capsule().frame(height: 1.4).padding(.horizontal, -2).rotationEffect(.degrees(-38))
-                        }
-                    }
+                    Glyph(name: "main-thing")
                 }
                 DragHandle(rowId: task.id, store: store, tint: theme.nsTextColor)
                     .help("Drag to move")
@@ -196,7 +192,7 @@ struct RowToolbar: View {
                     .padding(.horizontal, 3)
                     .layoutValue(key: FixedWidth.self, value: true)
                 ToolbarButton(help: "Delete (⌘Z to undo)", danger: true) { store.delete(task.id) } icon: {
-                    Glyph(name: "trash")
+                    Glyph(name: "delete")
                 }
             }
             .padding(3)
@@ -231,7 +227,7 @@ struct ToolbarButton<Icon: View>: View {
         Button(action: action) {
             GeometryReader { proxy in
                 icon()
-                    .frame(width: proxy.size.width * 0.54, height: proxy.size.height * 0.54)
+                    .frame(width: proxy.size.width * 0.8, height: proxy.size.height * 0.8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .foregroundStyle(danger && hovering ? red : theme.textColor)
@@ -249,15 +245,23 @@ struct ToolbarButton<Icon: View>: View {
     }
 }
 
-/// The color button's dot: an outline, filled with the row's color once set.
+/// The color button's ring (color.svg), filled with the row's color once set.
 struct ColorDot: View {
     @Environment(\.theme) private var theme
     let color: Color?
 
     var body: some View {
-        Circle()
-            .fill(color ?? .clear)
-            .overlay(Circle().strokeBorder(color == nil ? theme.textColor : theme.textColor.opacity(0.3), lineWidth: 1.4))
+        GeometryReader { proxy in
+            let side = min(proxy.size.width, proxy.size.height)
+            ZStack {
+                Circle()
+                    .fill(color ?? .clear)
+                    .frame(width: side * 0.64, height: side * 0.64)
+                Glyph(name: "color")
+                    .foregroundStyle(color == nil ? theme.textColor : theme.textColor.opacity(0.3))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }
 

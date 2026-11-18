@@ -401,7 +401,7 @@ final class DragHandleView: NSView, NSDraggingSource {
         super.init(frame: frame)
         alphaValue = 0.65
         wantsLayer = true
-        icon.image = NSImage(named: "drag-handle")
+        icon.image = NSImage(named: "drag")
         icon.image?.isTemplate = true
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
@@ -409,8 +409,8 @@ final class DragHandleView: NSView, NSDraggingSource {
         NSLayoutConstraint.activate([
             icon.centerXAnchor.constraint(equalTo: centerXAnchor),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.54),
-            icon.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.54),
+            icon.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.8),
+            icon.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.8),
         ])
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
     }

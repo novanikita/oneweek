@@ -322,10 +322,10 @@ function syncTaskColorButton(btn, color) {
   if (!dot) return;
   const c = normalizeTaskColor(color);
   if (c) {
-    dot.style.background = taskHighlightCssVar(c);
+    dot.style.setProperty("--task-color-fill", taskHighlightCssVar(c));
     dot.dataset.filled = "1";
   } else {
-    dot.style.background = "";
+    dot.style.removeProperty("--task-color-fill");
     delete dot.dataset.filled;
   }
 }

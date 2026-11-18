@@ -2418,7 +2418,8 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
    ------------------------------------------------------------------------ */
 .task-row-actions {
   --toolbar-btn: 1.85em;
-  --toolbar-icon: 54%;
+  /* The SVGs carry their own padding; a slight inset on top of it. */
+  --toolbar-icon: 80%;
   display: none;
   position: absolute;
   top: calc(100% + 0.3em);
@@ -2507,7 +2508,7 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
   background: color-mix(in srgb, #c62828 10%, transparent);
 }
 
-/* Every icon fills the same square, a fixed share of its button. */
+/* Every icon is the same square, a fixed share of its button. */
 .task-row-actions .task-commit::after,
 .task-row-actions .task-delete::after,
 .task-row-actions .task-indent::after,
@@ -2532,50 +2533,57 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 }
 
 .task-row-actions .task-commit::after {
-  -webkit-mask: url("../check-mark.svg") center / contain no-repeat;
-  mask: url("../check-mark.svg") center / contain no-repeat;
+  -webkit-mask: url("../done.svg") center / contain no-repeat;
+  mask: url("../done.svg") center / contain no-repeat;
 }
 
 .task-row-actions .task-delete::after {
-  -webkit-mask: url("../trash.svg") center / contain no-repeat;
-  mask: url("../trash.svg") center / contain no-repeat;
+  -webkit-mask: url("../delete.svg") center / contain no-repeat;
+  mask: url("../delete.svg") center / contain no-repeat;
 }
 
 .task-row-actions .task-indent::after {
-  -webkit-mask: url("../subtask.svg?v=2") center / contain no-repeat;
-  mask: url("../subtask.svg?v=2") center / contain no-repeat;
+  -webkit-mask: url("../subtask.svg?v=3") center / contain no-repeat;
+  mask: url("../subtask.svg?v=3") center / contain no-repeat;
 }
 
 .task-row-actions .task-star::after {
-  -webkit-mask: url("../star.svg?v=2") center / contain no-repeat;
-  mask: url("../star.svg?v=2") center / contain no-repeat;
+  -webkit-mask: url("../main-thing.svg") center / contain no-repeat;
+  mask: url("../main-thing.svg") center / contain no-repeat;
 }
 
-/* This week's main thing: the star is crossed out ("remove"). */
+/* This week's main thing: the button stays lit, no other mark. */
 .task-row-actions .task-star.is-on {
   opacity: 1;
 }
 
-.task-row-actions .task-star.is-on::before {
+/* The color ring (color.svg), filled with the row's color once one is set. */
+.task-color-dot {
+  position: relative;
+}
+
+.task-color-dot::before,
+.task-color-dot::after {
   content: "";
   position: absolute;
-  width: 68%;
-  height: 0.09em;
-  background: currentColor;
-  border-radius: 999em;
-  transform: rotate(-38deg);
   pointer-events: none;
 }
 
-.task-color-dot {
-  box-sizing: border-box;
+.task-color-dot::before {
+  inset: 18%;
   border-radius: 50%;
-  border: 0.09em solid currentColor;
-  background: transparent;
+  background: var(--task-color-fill, transparent);
+}
+
+.task-color-dot::after {
+  inset: 0;
+  background-color: currentColor;
+  -webkit-mask: url("../color.svg") center / contain no-repeat;
+  mask: url("../color.svg") center / contain no-repeat;
 }
 
 .task-color-dot[data-filled="1"] {
-  border-color: color-mix(in srgb, var(--color-text) 30%, transparent);
+  color: color-mix(in srgb, var(--color-text) 30%, transparent);
 }
 
 .task-drag-handle {
@@ -2591,8 +2599,8 @@ html[data-task-highlights="dark"] .task-row[data-color] .task-checkbox.checked::
 }
 
 .task-drag-handle-icon {
-  -webkit-mask: url("../drag-handle.svg?v=2") center / contain no-repeat;
-  mask: url("../drag-handle.svg?v=2") center / contain no-repeat;
+  -webkit-mask: url("../drag.svg") center / contain no-repeat;
+  mask: url("../drag.svg") center / contain no-repeat;
 }
 
 @media (max-width: 900px) {
