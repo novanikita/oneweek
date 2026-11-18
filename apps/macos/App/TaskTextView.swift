@@ -401,10 +401,19 @@ final class DragHandleView: NSView, NSDraggingSource {
         super.init(frame: frame)
         alphaValue = 0.65
         wantsLayer = true
-        icon.image = NSImage(named: "drag")
-        icon.image?.isTemplate = true
+        clipsToBounds = true
+        // The SVG is drawn on a 500-point canvas: give it a toolbar-sized
+        // natural size so it never pushes the handle (or the row) wider.
+        let image = (NSImage(named: "drag")?.copy() as? NSImage) ?? NSImage()
+        image.size = NSSize(width: 18, height: 18)
+        image.isTemplate = true
+        icon.image = image
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
+        for axis in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
+            icon.setContentHuggingPriority(.defaultLow, for: axis)
+            icon.setContentCompressionResistancePriority(.defaultLow, for: axis)
+        }
         addSubview(icon)
         NSLayoutConstraint.activate([
             icon.centerXAnchor.constraint(equalTo: centerXAnchor),
