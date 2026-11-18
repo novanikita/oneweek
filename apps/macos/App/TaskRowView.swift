@@ -30,19 +30,30 @@ struct TaskRowView: View {
                 store: store
             )
 
-            if store.subtaskCount(of: task.id) > 0 {
+            let subtasks = store.subtaskCount(of: task.id)
+            if subtasks > 0 {
                 Button {
                     store.toggleCollapsed(task.id)
                 } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .rotationEffect(.degrees(task.collapsed ? -90 : 0))
-                        .opacity(0.5)
-                        .frame(width: 16, height: Typeface.lineHeight)
-                        .contentShape(Rectangle())
+                    HStack(spacing: 3) {
+                        // How many subtasks are folded away, as on the site.
+                        if task.collapsed {
+                            Text("\(subtasks)")
+                                .font(.system(size: Typeface.bodySize * 0.65, weight: .semibold).monospacedDigit())
+                                .opacity(0.45)
+                                .transition(.opacity)
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .rotationEffect(.degrees(task.collapsed ? -90 : 0))
+                            .opacity(0.5)
+                            .frame(width: 16)
+                    }
+                    .frame(height: Typeface.lineHeight)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(PressStyle())
-                .help(task.collapsed ? "Show subtasks" : "Hide subtasks")
+                .help(task.collapsed ? "Show \(subtasks) subtask\(subtasks == 1 ? "" : "s")" : "Hide subtasks")
                 .animation(.calm(.easeOut(duration: 0.18), reduceMotion: reduceMotion), value: task.collapsed)
             }
         }
